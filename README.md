@@ -7,7 +7,7 @@
 - 准备 ONNX、外部权重文件、验证输入和 CPU 参考输出。需要 INT8 时，另备代表性校准样本、原生配置文件和量化部署 ONNX。
 - 确认 910B 的完整 SoC 型号，以及目标 310 的完整型号和板端 CANN 版本。比如 `Ascend310`、`Ascend310P3`、`Ascend310B4` 是不同目标。编译需要与目标芯片匹配的工具链和算子包。
 - 910B 可先用现有镜像 `2.10.0.post7-cann9.2.0-910b-ubuntu22.04-py3.12`。用 `docker image inspect` 确认镜像在离线服务器，按现场 NPU 容器运行方式挂载设备和工具目录。编译 310 所需的镜像或 CANN 软件包另行准备。
-- Shell 入口用 Bash 和增强版 util-linux `getopt`。Bash 或 Zsh 终端都运行 `bash scripts/xxx.sh`。所有 Shell 入口支持短选项、长选项和 `--help`。由工具用 `--cann-env` 加载对应的 `set_env.sh`。
+- Shell 入口用 Bash 和增强版 util-linux `getopt`。Bash 或 Zsh 终端都运行 `bash scripts/xxx.sh`。所有 Shell 入口都支持 `-h` 和 `--help`。支持 `--cann-env` 的入口可通过该参数加载对应的 `set_env.sh`。
 - 开发环境和 ONNX 准备工具使用 Python 3.10 或更高版本，YOLO 示例另需 OpenCV。仅运行 OM 和比对输出时，可以直接用板端的 Python 3.9，使用 NumPy 1.21 或更高版本和与板端 CANN、Python ABI 配套的厂商 pyACL。准备 wheel 时使用目标 Linux 架构和 Python 版本的联网环境。AMCT 使用其自身的依赖配套表。
 
 在联网的开发环境可用 `uv sync --extra prepare --extra yolo` 安装 Python 工具依赖。下面命令可在与离线使用环境同架构、同 Python 版本的联网机器上准备 wheelhouse。
@@ -93,6 +93,24 @@ python3 python/compare_outputs.py --reference work/reference \
 这个入口执行一次固定 shape 推理。多输入可重复传 `--input`，脚本按 OM 的输入顺序传给 `InferSession`。输出沿用 `output_0.npy` 和 `outputs.json` 格式，可以与 CPU 参考结果或 pyACL 的输出目录比较。需要预热、重复推理和吞吐统计时，可使用官方的 `python3 -m ais_bench` 命令。 [官方 Python API](https://gitee.com/ascend/tools/blob/master/ais-bench_workload/tool/ais_bench/API_GUIDE.md)
 
 ## INT8 量化
+
+### 下载和安装 AMCT
+
+两个脚本各接收一个 CANN 版本。下载脚本从昇腾社区软件源获取包含 `amct_onnx` 和 `amct_acl` 的 ARM64、x86_64 归档，并下载 ONNX Runtime 1.16.0 和 1.20.0 的自定义算子头文件。已核对 `8.5.0`、`9.0.0`、`9.1.0` 和 `9.2.0` 的包结构。
+
+```sh
+# On a machine with internet access
+bash scripts/download_amct.sh 9.2.0
+
+# On the target Linux machine, after copying work/amct/9.2.0/
+source /usr/local/Ascend/cann/set_env.sh
+source /path/to/amct-venv/bin/activate
+bash scripts/install_amct.sh 9.2.0
+```
+
+目标机需预装同版本 CANN Toolkit、C++ 编译器和 Python 开发头文件，并以有权安装 Toolkit 组件的用户执行。先在所选 Python 环境中准备 pip、setuptools 和配套依赖。Python 3.10/3.11 可用 `onnx==1.14.0`、`onnxruntime==1.16.0`、`numpy==1.24.4`、`protobuf==3.20.3`。Python 3.12 可用 `onnx==1.18.0`、`onnxruntime==1.20.0`、`numpy>=2.0.0`、`protobuf==3.20.3`。离线环境可按前面的 wheelhouse 流程准备这些依赖。 [华为 AMCT（ONNX）配套表](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/920beta2/devaids/amct/atlasamct_16_0014.html)
+
+安装脚本从仓库的 `work/amct/<版本>/` 按目标机架构选包，在当前 Python 环境安装 ONNX wheel 并编译自定义算子，再把 ACL 装到已加载的 Toolkit 安装位置。整个安装步骤可离线执行。 [华为 AMCT 安装指南](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/910/devaids/amct/atlasamct_16_0025.html)
 
 ### AMCT ONNX 预校准
 
