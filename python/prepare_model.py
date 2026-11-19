@@ -189,7 +189,10 @@ def main() -> None:
     calibration_parser = commands.add_parser("calibration", help="Prepare calibration binary files")
     for command in (inspect_parser, reference_parser, calibration_parser):
         command.add_argument("--model", required=True, type=Path)
-    reference_parser.add_argument("--input", required=True, action="append", metavar="NAME=FILE.npy")
+    reference_parser.add_argument(
+        "--input", required=True, action="append", metavar="NAME=FILE",
+        help="Model input file (.npy, .bin, .jpg, .jpeg, or .png), repeatable.",
+    )
     reference_parser.add_argument("--custom-ops-library", type=Path)
     calibration_parser.add_argument("--sample", required=True, action="append", type=Path)
     for command in (reference_parser, calibration_parser):

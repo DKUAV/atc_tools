@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from math import prod
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -88,7 +89,7 @@ def load_tensor(path: Path, tensor: Tensor) -> Array:
 
 
 def load_inputs(tensors: list[Tensor], arguments: list[str]) -> dict[str, Array]:
-    """Read exactly one named .npy file for each model input.
+    """Read exactly one named .npy, .bin, .jpg, or .png file per model input.
 
     Parameters
     ----------
@@ -114,7 +115,63 @@ def load_inputs(tensors: list[Tensor], arguments: list[str]) -> dict[str, Array]
             f"Input names do not match: missing={sorted(expected - paths.keys())}, "
             f"unexpected={sorted(paths.keys() - expected)}"
         )
-    return {tensor.name: load_tensor(Path(paths[tensor.name]), tensor) for tensor in tensors}
+    return {tensor.name: _load_input(Path(paths[tensor.name]), tensor) for tensor in tensors}
+
+
+def _load_input(path: Path, tensor: Tensor) -> Array:
+    """Read a named inference input according to its file extension.
+
+    Parameters
+    ----------
+    path
+        NumPy, raw binary, JPEG, or PNG file.
+    tensor
+        Model input shape and dtype.
+
+    Returns
+    -------
+    Array
+        Input array with the required shape and dtype in C order.
+
+    Raises
+    ------
+    OSError
+        The file could not be read.
+    ValueError
+        The file or tensor specification is incompatible with the input format.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".npy":
+        return load_tensor(path, tensor)
+    if suffix == ".bin":
+        size = prod(tensor.shape) * tensor.dtype.itemsize
+        with path.open("rb") as stream:
+            data = bytearray(size)
+            if stream.readinto(data) != size or stream.read(1):
+                raise ValueError(f"{tensor.name}: expected exactly {size} bytes in {path}")
+        return np.frombuffer(data, dtype=tensor.dtype).reshape(tensor.shape)
+    if suffix not in (".jpg", ".jpeg", ".png"):
+        raise ValueError(f"{tensor.name}: expected a .npy, .bin, .jpg, .jpeg, or .png file: {path}")
+
+    shape = tensor.shape
+    if (
+        len(shape) != 4 or shape[0] != 1 or any(dim <= 0 for dim in shape)
+        or (shape[1] == 3) == (shape[3] == 3)
+        or (tensor.dtype.kind != "f" and tensor.dtype != np.dtype("uint8"))
+    ):
+        raise ValueError(
+            f"{tensor.name}: image input requires an unambiguous batch-one RGB NCHW or NHWC "
+            f"tensor with a float or uint8 dtype, got {shape} {tensor.dtype}. Use .npy or .bin."
+        )
+    try:
+        from image_input import image_tensor, letterbox, read_image
+    except ImportError as error:
+        raise ValueError("JPG/PNG input requires OpenCV. Install opencv-python-headless.") from error
+
+    channels_first = shape[1] == 3
+    height, width = shape[2:] if channels_first else shape[1:3]
+    canvas, _, _, _ = letterbox(read_image(path), width, height)
+    return image_tensor(canvas, channels_first, tensor.dtype)
 
 
 def save_outputs(directory: Path, outputs: dict[str, Array]) -> None:

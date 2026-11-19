@@ -9,6 +9,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
 
+import cv2
 import numpy as np
 import onnx
 import onnxruntime as ort
@@ -17,7 +18,7 @@ from onnx import TensorProto, helper, numpy_helper
 from compare_outputs import compare
 from prepare_model import describe_inputs, inspect_onnx, write_calibration
 from run_om import ACL_DEVICE, ACL_HOST, infer
-from tensor_io import load_inputs, read_outputs, save_outputs
+from tensor_io import Tensor, load_inputs, read_outputs, save_outputs
 
 
 class ModelPreparationTest(unittest.TestCase):
@@ -147,7 +148,7 @@ class FakeAcl(ModuleType):
         """Return the input bytes or the requested execution error."""
         if not self.execute_status:
             source, destination = list(self.allocations)[:2]
-            ctypes.memmove(destination, source, 8)
+            ctypes.memmove(destination, source, ctypes.sizeof(self.allocations[source]))
         return self.execute_status
 
 
@@ -184,3 +185,41 @@ class InferenceTest(unittest.TestCase):
             acl.mdl.unload.assert_called_once_with(0)
             acl.rt.reset_device.assert_called_once_with(0)
             acl.finalize.assert_called_once_with()
+
+    def test_png_inference_matches_prepared_tensor(self) -> None:
+        """Send a letterboxed RGB NCHW float tensor to the OM backend."""
+        with tempfile.TemporaryDirectory(prefix="atc-test-") as directory:
+            path = Path(directory) / "图像.PNG"
+            bgr = np.full((2, 4, 3), (0, 51, 255), dtype=np.uint8)
+            encoded, image = cv2.imencode(".png", bgr)
+            self.assertTrue(encoded)
+            image.tofile(path)
+            expected = np.full((1, 3, 6, 8), 114 / 255, dtype=np.float32)
+            expected[:, :, 1:5, :] = np.array([1, 0.2, 0], dtype=np.float32).reshape(1, 3, 1, 1)
+
+            acl = FakeAcl(ACL_HOST)
+            for direction in ("input", "output"):
+                getattr(acl.mdl, f"get_{direction}_dims").return_value = ({"dims": list(expected.shape)}, 0)
+                getattr(acl.mdl, f"get_{direction}_format").return_value = 0
+                getattr(acl.mdl, f"get_{direction}_size_by_index").return_value = expected.nbytes
+            outputs, _ = infer(acl, Path("model.om"), 0, [f"x={path}"], 0, 1)
+            np.testing.assert_array_equal(outputs["y"], expected)
+            self.assertFalse(acl.allocations)
+
+    def test_jpeg_nhwc_and_image_validation(self) -> None:
+        """Keep integer pixels in NHWC order and reject unusable image inputs."""
+        with tempfile.TemporaryDirectory(prefix="atc-test-") as directory:
+            path = Path(directory) / "input.jpg"
+            encoded, image = cv2.imencode(".jpg", np.full((2, 4, 3), 80, dtype=np.uint8))
+            self.assertTrue(encoded)
+            image.tofile(path)
+            spec = Tensor("x", (1, 2, 4, 3), np.dtype("uint8"))
+            result = load_inputs([spec], [f"x={path}"])["x"]
+            np.testing.assert_array_equal(result, np.full(spec.shape, 80, dtype=spec.dtype))
+            self.assertTrue(result.flags.c_contiguous)
+            ambiguous = Tensor("x", (1, 3, 4, 3), spec.dtype)
+            with self.assertRaisesRegex(ValueError, "unambiguous"):
+                load_inputs([ambiguous], [f"x={path}"])
+            path.write_bytes(b"")
+            with self.assertRaisesRegex(ValueError, "Cannot decode image"):
+                load_inputs([spec], [f"x={path}"])

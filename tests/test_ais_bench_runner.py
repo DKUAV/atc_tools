@@ -19,7 +19,7 @@ class AisBenchRunnerTest(unittest.TestCase):
     """Check input ordering, output manifests, and session cleanup."""
 
     def test_cli_writes_outputs_in_model_order(self) -> None:
-        """Accept named arguments in any order and emit comparable outputs."""
+        """Read mixed NPY and BIN inputs in model order and emit comparable outputs."""
         with tempfile.TemporaryDirectory(prefix="atc-ais-bench-") as directory:
             root = Path(directory)
             model = root / "test.om"
@@ -27,7 +27,7 @@ class AisBenchRunnerTest(unittest.TestCase):
             left = np.array([1, 2], dtype=np.float32)
             right = np.array([4, 6], dtype=np.float32)
             np.save(root / "left.npy", left)
-            np.save(root / "right.npy", right)
+            right.tofile(root / "right.bin")
             dtype = SimpleNamespace(name="float32")
             session = Mock()
             session.get_inputs.return_value = [
@@ -43,7 +43,7 @@ class AisBenchRunnerTest(unittest.TestCase):
             module = SimpleNamespace(InferSession=constructor)
             args = [
                 "run_om_ais_bench.py", "--model", str(model), "--device", "2",
-                "--input", f"right={root / 'right.npy'}",
+                "--input", f"right={root / 'right.bin'}",
                 "--input", f"left={root / 'left.npy'}",
                 "--output-dir", str(root / "outputs"),
             ]
@@ -78,3 +78,22 @@ class AisBenchRunnerTest(unittest.TestCase):
                 infer(session, [f"x={array}"])
             session.infer.assert_not_called()
             session.free_resource.assert_called_once_with()
+
+    def test_incorrect_bin_size_releases_session(self) -> None:
+        """Reject truncated and oversized binary tensors before inference."""
+        with tempfile.TemporaryDirectory(prefix="atc-ais-bench-") as directory:
+            path = Path(directory) / "input.bin"
+            for size in (7, 9):
+                with self.subTest(size=size):
+                    path.write_bytes(bytes(size))
+                    session = Mock()
+                    session.get_inputs.return_value = [
+                        SimpleNamespace(
+                            name="x", shape=[2], datatype=SimpleNamespace(name="float32"), realsize=8
+                        )
+                    ]
+                    session.get_outputs.return_value = [SimpleNamespace(name="y")]
+                    with self.assertRaisesRegex(ValueError, "expected exactly 8 bytes"):
+                        infer(session, [f"x={path}"])
+                    session.infer.assert_not_called()
+                    session.free_resource.assert_called_once_with()

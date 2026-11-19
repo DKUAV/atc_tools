@@ -262,7 +262,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--input", required=True, action="append", metavar="NAME=FILE.npy")
+    parser.add_argument(
+        "--input", required=True, action="append", metavar="NAME=FILE",
+        help="Model input file (.npy, .bin, .jpg, .jpeg, or .png), repeatable.",
+    )
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--repeat", type=int, default=1)

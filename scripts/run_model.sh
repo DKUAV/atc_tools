@@ -2,9 +2,9 @@
 source "$(dirname -- "${BASH_SOURCE[0]}")/_shell.sh"
 
 usage() {
-    printf '%s\n' 'Usage: bash scripts/run_model.sh -m OM -i NAME=ARRAY.npy -o NEW_DIR [options]' \
+    printf '%s\n' 'Usage: bash scripts/run_model.sh -m OM -i NAME=FILE -o NEW_DIR [options]' \
         '  -m, --model          OM model' \
-        '  -i, --input          Tensor name and .npy file, repeatable' \
+        '  -i, --input          NAME=FILE (.npy, .bin, .jpg, .jpeg, .png), repeatable' \
         '  -o, --output-dir     New directory for raw model outputs' \
         '  -d, --device         Logical device ID (default: 0)' \
         '  -r, --reference      Directory produced by prepare_model.py reference' \

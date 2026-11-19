@@ -4,64 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-
-def read_image(path: Path) -> NDArray[np.uint8]:
-    """Read a BGR image, including paths with non-ASCII characters.
-
-    Parameters
-    ----------
-    path
-        Encoded image path.
-
-    Returns
-    -------
-    NDArray[np.uint8]
-        Decoded image in BGR channel order.
-
-    Raises
-    ------
-    ValueError
-        The file could not be decoded as an image.
-    """
-    image = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
-    if image is None:
-        raise ValueError(f"Cannot decode image: {path}")
-    return np.asarray(image, dtype=np.uint8)
-
-
-def letterbox(
-    image: NDArray[np.uint8], width: int, height: int
-) -> tuple[NDArray[np.uint8], float, int, int]:
-    """Resize and pad to fixed dimensions and return the coordinate transform.
-
-    Parameters
-    ----------
-    image
-        Original BGR image.
-    width, height
-        Fixed model input dimensions.
-
-    Returns
-    -------
-    tuple[NDArray[np.uint8], float, int, int]
-        Padded image, resize scale, and left and top padding.
-    """
-    source_height, source_width = image.shape[:2]
-    scale = min(width / source_width, height / source_height)
-    resized_width = max(1, round(source_width * scale))
-    resized_height = max(1, round(source_height * scale))
-    left = (width - resized_width) // 2
-    top = (height - resized_height) // 2
-    resized = cv2.resize(image, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((height, width, 3), 114, dtype=np.uint8)
-    canvas[top:top + resized_height, left:left + resized_width] = resized
-    return canvas, scale, left, top
+# Keep the example runnable directly from a checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
+from image_input import image_tensor, letterbox, read_image
 
 
 def detections(
@@ -149,11 +101,10 @@ def main() -> None:
         if args.command == "preprocess":
             if args.output.suffix.lower() != ".npy":
                 raise ValueError("The output path must end in .npy.")
-            tensor = np.ascontiguousarray(canvas[:, :, ::-1].transpose(2, 0, 1)[None], dtype=np.float32)
-            tensor /= 255
+            tensor = image_tensor(canvas, channels_first=True, dtype=np.dtype(args.dtype))
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("xb") as stream:
-                np.save(stream, tensor.astype(args.dtype), allow_pickle=False)
+                np.save(stream, tensor, allow_pickle=False)
             return
 
         if not 0 < args.confidence <= 1 or not 0 <= args.iou <= 1:

@@ -21,7 +21,7 @@ def infer(session: Any, arguments: list[str]) -> dict[str, Array]:
     session
         An ais_bench InferSession for a fixed-shape OM.
     arguments
-        One NAME=FILE.npy argument per model input, in any order.
+        One NAME=FILE argument per model input, in any order.
 
     Returns
     -------
@@ -64,7 +64,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--input", required=True, action="append", metavar="NAME=FILE.npy")
+    parser.add_argument(
+        "--input", required=True, action="append", metavar="NAME=FILE",
+        help="Model input file (.npy, .bin, .jpg, .jpeg, or .png), repeatable.",
+    )
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
     if args.device < 0:
