@@ -13,9 +13,9 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from ascend_atc_tools.run_om_ais_bench import infer, main
-from ascend_atc_tools.tensor_io import read_outputs
-from ascend_atc_tools.yolo_image import main as yolo_main
+from atc_tools.cli import main
+from atc_tools.inference.ais_bench import infer
+from atc_tools.model.tensor_io import read_outputs
 
 
 class AisBenchRunnerTest(unittest.TestCase):
@@ -45,7 +45,8 @@ class AisBenchRunnerTest(unittest.TestCase):
             constructor = Mock(return_value=session)
             module = SimpleNamespace(InferSession=constructor)
             args = [
-                "run_om_ais_bench.py",
+                "om",
+                "run-ais-bench",
                 "--model",
                 str(model),
                 "--device",
@@ -57,11 +58,8 @@ class AisBenchRunnerTest(unittest.TestCase):
                 "--output-dir",
                 str(root / "outputs"),
             ]
-            with (
-                patch.object(sys, "argv", args),
-                patch.dict(sys.modules, {"ais_bench.infer.interface": module}),
-            ):
-                main()
+            with patch.dict(sys.modules, {"ais_bench.infer.interface": module}):
+                self.assertEqual(main(args), 0)
             constructor.assert_called_once_with(2, str(model))
             ordered_feeds = session.infer.call_args.args[0]
             np.testing.assert_array_equal(ordered_feeds[0], left)
@@ -143,7 +141,7 @@ class AisBenchRunnerTest(unittest.TestCase):
             ]
             constructor = Mock(return_value=session)
             args = [
-                "atc-yolo-image",
+                "yolo",
                 "infer",
                 "--model",
                 str(model_path),
@@ -156,18 +154,15 @@ class AisBenchRunnerTest(unittest.TestCase):
                 "--output-dir",
                 str(output_dir),
             ]
-            with (
-                patch.object(sys, "argv", args),
-                patch.dict(
-                    sys.modules,
-                    {
-                        "ais_bench.infer.interface": SimpleNamespace(
-                            InferSession=constructor
-                        )
-                    },
-                ),
+            with patch.dict(
+                sys.modules,
+                {
+                    "ais_bench.infer.interface": SimpleNamespace(
+                        InferSession=constructor
+                    )
+                },
             ):
-                yolo_main()
+                self.assertEqual(main(args), 0)
             constructor.assert_called_once_with(2, str(model_path))
             tensor = session.infer.call_args.args[0][0]
             self.assertEqual(session.infer.call_args.kwargs, {"mode": "static"})

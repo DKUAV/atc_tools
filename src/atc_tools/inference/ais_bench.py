@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from ascend_atc_tools.tensor_io import Array, Tensor, load_inputs, save_outputs
+from atc_tools.model.tensor_io import Array, Tensor, load_inputs, save_outputs
 
 
 def create_session(model: Path, device: int) -> Any:
@@ -116,20 +116,21 @@ def infer(session: Any, arguments: list[str]) -> dict[str, Array]:
         session.free_resource()
 
 
-def main() -> None:
-    """Run a single OM inference using the optional vendor packages."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", required=True, type=Path)
-    parser.add_argument("--device", type=int, default=0)
-    parser.add_argument(
-        "--input",
-        required=True,
-        action="append",
-        metavar="NAME=FILE",
-        help="Model input file (.npy, .bin, .jpg, .jpeg, or .png), repeatable.",
-    )
-    parser.add_argument("--output-dir", required=True, type=Path)
-    args = parser.parse_args()
+def run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Run static OM inference through ais_bench and save model outputs.
+
+    Parameters
+    ----------
+    args
+        Parsed OM model, device, input, and output options.
+    parser
+        Parser used to report invalid options or inference errors.
+
+    Raises
+    ------
+    SystemExit
+        The options are invalid or inference failed.
+    """
     if args.device < 0:
         parser.error("Device ID must be nonnegative.")
     if not args.model.is_file():
@@ -143,7 +144,3 @@ def main() -> None:
         print(f"ais_bench outputs: {args.output_dir}")
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         parser.exit(1, f"ais_bench inference failed: {error}\n")
-
-
-if __name__ == "__main__":
-    main()

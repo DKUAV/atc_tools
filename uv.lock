@@ -10,7 +10,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "ascend-atc-tools"
+name = "atc-tools"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -31,7 +31,7 @@ yolo = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "ascend-atc-tools", extra = ["prepare", "yolo"] },
+    { name = "atc-tools", extra = ["prepare", "yolo"] },
     { name = "ruff" },
     { name = "ty" },
 ]
@@ -48,7 +48,7 @@ provides-extras = ["prepare", "yolo"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "ascend-atc-tools", extras = ["prepare", "yolo"] },
+    { name = "atc-tools", extras = ["prepare", "yolo"] },
     { name = "ruff", specifier = ">=0.17.1" },
     { name = "ty", specifier = ">=0.0.89" },
 ]

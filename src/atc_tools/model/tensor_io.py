@@ -196,7 +196,7 @@ def _load_input(path: Path, tensor: Tensor) -> Array:
 
     channels_first, height, width = image_geometry(tensor)
     try:
-        from ascend_atc_tools.image_input import image_tensor, letterbox, read_image
+        from atc_tools.model.image_input import image_tensor, letterbox, read_image
     except ImportError as error:
         raise ValueError(
             "JPG/PNG input requires OpenCV. Install opencv-python-headless."

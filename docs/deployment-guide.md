@@ -24,7 +24,7 @@ python3 -m pip download --only-binary=:all: hatchling hatch-vcs -d work/wheelhou
 
 ```bash
 python3 -m pip install --no-index --find-links work/wheelhouse -e '.[prepare,yolo]'
-python3 -c 'from importlib.metadata import version; print(version("ascend-atc-tools"))'
+atc_tools --version
 ```
 
 安装时根据 Git 标签和提交生成包版本。离线复制工作区时可保留 `.git`，或使用构建好的源码发行包来保留版本。直接从普通源码目录安装时，若版本元数据缺失，则使用 `0.0.0`。仅使用 NPY 或 BIN 执行 OM 推理时，安装基础包即可，再准备所选推理后端。
@@ -48,8 +48,8 @@ bash scripts/probe_env.sh |& tee work/environment.log
 从仓库根目录执行命令。下文以单输入 `images` 为例，实际名称和形状以检查结果为准。
 
 ```bash
-atc-prepare-model inspect --model work/model.onnx
-atc-prepare-model reference --model work/model.onnx \
+atc_tools onnx inspect --model work/model.onnx
+atc_tools onnx reference --model work/model.onnx \
   --input images=work/input.npy --output-dir work/reference
 ```
 
@@ -96,9 +96,9 @@ bash scripts/run_model.sh --model work/910b-float/model.om --device 0 \
 安装昇腾的 OM 推理版 `ais_bench` 和配套 `aclruntime`。离线使用时提前把 wheel 和依赖放进 wheelhouse。按设备上的 CANN、CPU 架构和 Python ABI 选包，例如 ARM64 Python 3.12 环境对应 `cp312`、`linux_aarch64` 的 `aclruntime` wheel。执行前加载该环境的 CANN `set_env.sh`。 [官方安装与 wheel 清单](https://gitee.com/ascend/tools/blob/master/ais-bench_workload/tool/ais_bench/README.md)
 
 ```bash
-atc-run-om-ais-bench --model work/910b-float/model.om --device 0 \
+atc_tools om run-ais-bench --model work/910b-float/model.om --device 0 \
   --input images=work/input.npy --output-dir work/910b-ais-bench-outputs
-atc-compare-outputs --reference work/reference \
+atc_tools om compare --reference work/reference \
   --actual work/910b-ais-bench-outputs
 ```
 
@@ -132,7 +132,7 @@ bash scripts/install_amct.sh 9.2.0
 校准数据应代表业务场景。每个校准 batch 建一个目录，按 ONNX 的输入顺序放 `input_0.npy`、`input_1.npy` 等。同一个输入在所有 batch 中保持 dtype、shape 和预处理一致。另留独立的验证集。
 
 ```bash
-atc-prepare-model calibration --model work/model.onnx \
+atc_tools onnx calibration --model work/model.onnx \
   --sample work/samples/0001 --sample work/samples/0002 --output-dir work/calibration
 cp configs/amct-onnx.cfg work/amct-onnx.cfg
 ```
@@ -148,7 +148,7 @@ bash scripts/compile.sh --model work/quantized/model_deploy_model.onnx \
   --soc "$SOC_910B" --output-dir work/910b-int8
 ```
 
-`calibration.json` 中有对应的 `input_shape`、`data_types`、`data_dir`。多输入按清单中的顺序传入，Shell 中需引用含分号的整段值。`model_fake_quant_model.onnx` 用于 CPU 精度仿真，若依赖 AMCT 自定义算子库，给 `atc-prepare-model reference` 加 `--custom-ops-library /path/to/library.so`，并使用配套的 ONNX Runtime。编译要选 `model_deploy_model.onnx`。
+`calibration.json` 中有对应的 `input_shape`、`data_types`、`data_dir`。多输入按清单中的顺序传入，Shell 中需引用含分号的整段值。`model_fake_quant_model.onnx` 用于 CPU 精度仿真，若依赖 AMCT 自定义算子库，给 `atc_tools onnx reference` 加 `--custom-ops-library /path/to/library.so`，并使用配套的 ONNX Runtime。编译要选 `model_deploy_model.onnx`。
 
 ### ATC 内联校准
 
@@ -184,7 +184,7 @@ bash scripts/compile.sh --model work/quantized/model_deploy_model.onnx \
 先准备 OpenCV、`ais_bench` 和 `aclruntime`，并加载对应的 CANN 环境。单图推理从 OM 读取输入尺寸和 dtype，支持一个固定 shape 的单张 RGB 输入和一个检测输出。 [ais_bench 安装说明](#用-ais_bench-的-python-api-执行-om)
 
 ```bash
-atc-yolo-image infer --model work/910b-float/model.om \
+atc_tools yolo infer --model work/910b-float/model.om \
   --image work/test.jpg --device 0 --layout v8 --output-dir work/detections
 ```
 
@@ -193,10 +193,10 @@ atc-yolo-image infer --model work/910b-float/model.om \
 生成 CPU 参考输入或单独处理已有的预测张量时，可分别运行预处理和后处理。
 
 ```bash
-atc-yolo-image preprocess --image work/test.jpg \
+atc_tools yolo preprocess --image work/test.jpg \
   --width 640 --height 640 --output work/input.npy
 # After running the OM, use outputs.json to locate the prediction tensor.
-atc-yolo-image postprocess --image work/test.jpg \
+atc_tools yolo postprocess --image work/test.jpg \
   --width 640 --height 640 --predictions work/910b-float-outputs/output_0.npy \
   --layout v8 --output-dir work/detections
 ```

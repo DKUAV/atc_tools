@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import argparse
 import math
-from pathlib import Path
 
 import numpy as np
 
-from ascend_atc_tools.tensor_io import Array, parse_pairs, read_outputs
+from atc_tools.model.tensor_io import Array, parse_pairs, read_outputs
 
 
 def compare(
@@ -57,17 +56,26 @@ def compare(
     )
 
 
-def main() -> int:
-    """Report comparisons and return a failing exit code for any mismatch."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--reference", required=True, type=Path)
-    parser.add_argument("--actual", required=True, type=Path)
-    parser.add_argument("--atol", type=float, default=0.001)
-    parser.add_argument("--rtol", type=float, default=0.01)
-    parser.add_argument(
-        "--output-map", action="append", default=[], metavar="REFERENCE=ACTUAL"
-    )
-    args = parser.parse_args()
+def run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Report comparisons and return a failing exit code for a mismatch.
+
+    Parameters
+    ----------
+    args
+        Parsed output directories, tolerances, and name overrides.
+    parser
+        Parser used to report invalid options or unreadable outputs.
+
+    Returns
+    -------
+    int
+        Zero when every output matches, or one when a comparison fails.
+
+    Raises
+    ------
+    SystemExit
+        The options or output manifests are invalid.
+    """
     if any(not math.isfinite(value) or value < 0 for value in (args.atol, args.rtol)):
         parser.error("Tolerances must be finite and nonnegative.")
     try:
@@ -96,7 +104,3 @@ def main() -> int:
         return 0 if passed else 1
     except (OSError, TypeError, ValueError) as error:
         parser.exit(1, f"Comparison failed: {error}\n")
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

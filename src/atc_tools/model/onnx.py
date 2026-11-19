@@ -13,7 +13,7 @@ import onnx
 import onnxruntime as ort
 from google.protobuf.message import DecodeError, Message
 
-from ascend_atc_tools.tensor_io import (
+from atc_tools.model.tensor_io import (
     Array,
     Tensor,
     load_inputs,
@@ -222,35 +222,21 @@ def write_calibration(
     }
 
 
-def main() -> None:
-    """Run the selected ONNX preparation command."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    inspect_parser = commands.add_parser(
-        "inspect", help="Show ONNX input and output details"
-    )
-    reference_parser = commands.add_parser(
-        "reference", help="Generate CPU reference outputs"
-    )
-    calibration_parser = commands.add_parser(
-        "calibration", help="Prepare calibration binary files"
-    )
-    for command in (inspect_parser, reference_parser, calibration_parser):
-        command.add_argument("--model", required=True, type=Path)
-    reference_parser.add_argument(
-        "--input",
-        required=True,
-        action="append",
-        metavar="NAME=FILE",
-        help="Model input file (.npy, .bin, .jpg, .jpeg, or .png), repeatable.",
-    )
-    reference_parser.add_argument("--custom-ops-library", type=Path)
-    calibration_parser.add_argument(
-        "--sample", required=True, action="append", type=Path
-    )
-    for command in (reference_parser, calibration_parser):
-        command.add_argument("--output-dir", required=True, type=Path)
-    args = parser.parse_args()
+def run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Execute an ONNX inspection, reference, or calibration command.
+
+    Parameters
+    ----------
+    args
+        Parsed options for the selected ONNX command.
+    parser
+        Parser used to report preparation errors.
+
+    Raises
+    ------
+    SystemExit
+        Model preparation or ONNX Runtime execution failed.
+    """
     try:
         if args.command == "inspect":
             print(json.dumps(inspect_onnx(args.model), indent=2))
@@ -288,7 +274,3 @@ def main() -> None:
         if not type(error).__module__.startswith("onnxruntime."):
             raise
         parser.exit(1, f"ONNX Runtime failed: {error}\n")
-
-
-if __name__ == "__main__":
-    main()

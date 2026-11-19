@@ -14,7 +14,7 @@ from types import ModuleType
 
 import numpy as np
 
-from ascend_atc_tools.tensor_io import Array, Tensor, load_inputs, save_outputs
+from atc_tools.model.tensor_io import Array, Tensor, load_inputs, save_outputs
 
 ACL_DEVICE = 0
 ACL_HOST = 1
@@ -315,22 +315,21 @@ def infer(
         return outputs, elapsed_ms
 
 
-def main() -> None:
-    """Load the vendor pyACL module and save outputs for a single execution."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", required=True, type=Path)
-    parser.add_argument("--device", type=int, default=0)
-    parser.add_argument(
-        "--input",
-        required=True,
-        action="append",
-        metavar="NAME=FILE",
-        help="Model input file (.npy, .bin, .jpg, .jpeg, or .png), repeatable.",
-    )
-    parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--warmup", type=int, default=0)
-    parser.add_argument("--repeat", type=int, default=1)
-    args = parser.parse_args()
+def run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Run pyACL inference, report timings, and save model outputs.
+
+    Parameters
+    ----------
+    args
+        Parsed OM input, output, device, and timing options.
+    parser
+        Parser used to report invalid options or inference errors.
+
+    Raises
+    ------
+    SystemExit
+        The options are invalid or inference failed.
+    """
     if args.device < 0:
         parser.error("Device ID must be nonnegative.")
     if args.warmup < 0 or args.repeat < 1:
@@ -353,7 +352,3 @@ def main() -> None:
         )
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as error:
         parser.exit(1, f"OM inference failed: {error}\n")
-
-
-if __name__ == "__main__":
-    main()

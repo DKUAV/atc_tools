@@ -10,9 +10,9 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from ascend_atc_tools.image_input import image_tensor, letterbox, read_image
-from ascend_atc_tools.run_om_ais_bench import create_session, describe_inputs
-from ascend_atc_tools.tensor_io import image_geometry
+from atc_tools.inference.ais_bench import create_session, describe_inputs
+from atc_tools.model.image_input import image_tensor, letterbox, read_image
+from atc_tools.model.tensor_io import image_geometry
 
 
 def infer_image(
@@ -127,37 +127,21 @@ def detections(
     return boxes, scores[kept], classes[kept].astype(np.int64)
 
 
-def main() -> None:
-    """Run inference or an individual image processing step."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    prepare = commands.add_parser(
-        "preprocess", help="Write a normalized RGB NCHW tensor"
-    )
-    post = commands.add_parser(
-        "postprocess", help="Write boxes as JSON and draw an image"
-    )
-    run = commands.add_parser(
-        "infer", help="Run an OM through ais_bench and render detections"
-    )
-    for command in (prepare, post, run):
-        command.add_argument("--image", required=True, type=Path)
-    for command in (prepare, post):
-        command.add_argument("--width", required=True, type=int)
-        command.add_argument("--height", required=True, type=int)
-    prepare.add_argument("--output", required=True, type=Path)
-    prepare.add_argument("--dtype", choices=("float32", "float16"), default="float32")
-    post.add_argument("--predictions", required=True, type=Path)
-    run.add_argument("--model", required=True, type=Path, help="YOLO OM file")
-    run.add_argument(
-        "--device", type=int, default=0, help="Logical NPU device ID (default: 0)"
-    )
-    for command in (post, run):
-        command.add_argument("--layout", required=True, choices=("v5", "v8", "xyxy"))
-        command.add_argument("--output-dir", required=True, type=Path)
-        command.add_argument("--confidence", type=float, default=0.25)
-        command.add_argument("--iou", type=float, default=0.45)
-    args = parser.parse_args()
+def run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Run YOLO inference or an individual image processing step.
+
+    Parameters
+    ----------
+    args
+        Parsed options for the selected YOLO command.
+    parser
+        Parser used to report invalid options or detection errors.
+
+    Raises
+    ------
+    SystemExit
+        The options are invalid or the selected operation failed.
+    """
     if args.command == "infer":
         if args.device < 0:
             parser.error("Device ID must be nonnegative.")
@@ -229,7 +213,3 @@ def main() -> None:
         preview.tofile(args.output_dir / "annotated.jpg")
     except (OSError, RuntimeError, TypeError, ValueError, cv2.error) as error:
         parser.exit(1, f"YOLO example failed: {error}\n")
-
-
-if __name__ == "__main__":
-    main()

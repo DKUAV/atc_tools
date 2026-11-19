@@ -22,9 +22,12 @@ bash scripts/probe_env.sh
 
 ```bash
 python3 -m pip install -e '.[prepare,yolo]'
+atc_tools --help
 ```
 
 `prepare` 提供 ONNX 模型检查和 CPU 参考推理依赖，`yolo` 提供直接输入图片以及 YOLO 示例所需的 OpenCV。安装时根据 Git 标签和提交生成包版本。 [依赖配置](pyproject.toml)
+
+Python 命令统一使用 `atc_tools`。`onnx` 用于检查模型、生成 CPU 参考输出和准备校准数据，`om` 用于设备推理和输出对比，`yolo` 用于单图检测。
 
 #### 安装 AMCT
 
@@ -53,10 +56,10 @@ bash scripts/install_amct.sh <CANN_version>
 
 ```bash
 # Inspect model inputs, outputs, and external weights.
-atc-prepare-model inspect --model work/model.onnx
+atc_tools onnx inspect --model work/model.onnx
 
 # Generate CPU reference outputs for comparison.
-atc-prepare-model reference --model work/model.onnx \
+atc_tools onnx reference --model work/model.onnx \
   --input images=work/input.npy --output-dir work/reference
 ```
 
@@ -114,7 +117,7 @@ bash scripts/run_model.sh --model work/"$SOC_VERSION"-float/model.om --device 0 
 选取能代表实际业务输入的样本，按模型要求完成预处理。每个 batch 放一个目录，按 ONNX 输入顺序命名为 `input_0.npy`、`input_1.npy` 等。每个张量的 shape 和 dtype 应与原始 ONNX 输入一致。以下用两个 batch 演示，正式量化按需要增加样本，并单独留出验证集。
 
 ```bash
-atc-prepare-model calibration --model work/model.onnx \
+atc_tools onnx calibration --model work/model.onnx \
   --sample work/samples/0001 --sample work/samples/0002 \
   --output-dir work/calibration
 ```

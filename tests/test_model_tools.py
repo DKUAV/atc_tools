@@ -5,6 +5,8 @@ from __future__ import annotations
 import ctypes
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
@@ -15,14 +17,15 @@ import onnx
 import onnxruntime as ort
 from onnx import TensorProto, helper, numpy_helper
 
-from ascend_atc_tools.compare_outputs import compare
-from ascend_atc_tools.prepare_model import (
+from atc_tools.cli import main
+from atc_tools.inference.compare import compare
+from atc_tools.inference.pyacl import ACL_DEVICE, ACL_HOST, infer
+from atc_tools.model.onnx import (
     describe_inputs,
     inspect_onnx,
     write_calibration,
 )
-from ascend_atc_tools.run_om import ACL_DEVICE, ACL_HOST, infer
-from ascend_atc_tools.tensor_io import Tensor, load_inputs, read_outputs, save_outputs
+from atc_tools.model.tensor_io import Tensor, load_inputs, read_outputs, save_outputs
 
 
 class ModelPreparationTest(unittest.TestCase):
@@ -119,6 +122,26 @@ class ModelPreparationTest(unittest.TestCase):
         result = compare(np.array([0.0, 1.0]), np.array([0.0, 1.1]), 0.01, 0.01)
         self.assertFalse(result[0])
         self.assertIn("(1,)", result[1])
+
+    def test_om_compare_command_returns_the_comparison_status(self) -> None:
+        """Propagate the comparison status through the unified CLI."""
+        with tempfile.TemporaryDirectory(prefix="atc-compare-") as directory:
+            root = Path(directory)
+            reference = root / "reference"
+            actual = root / "actual"
+            save_outputs(reference, {"out": np.array([1.0], dtype=np.float32)})
+            save_outputs(actual, {"out": np.array([2.0], dtype=np.float32)})
+            args = [
+                "om",
+                "compare",
+                "--reference",
+                str(reference),
+                "--actual",
+                str(actual),
+            ]
+            with redirect_stdout(StringIO()) as report:
+                self.assertEqual(main(args), 1)
+            self.assertIn("FAIL out", report.getvalue())
 
 
 class FakeAcl(ModuleType):

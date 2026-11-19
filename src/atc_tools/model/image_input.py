@@ -1,4 +1,4 @@
-"""Decode images and prepare letterboxed RGB tensors."""
+"""Decode images and prepare letterboxed RGB model inputs."""
 
 from __future__ import annotations
 
