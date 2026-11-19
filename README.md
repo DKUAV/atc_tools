@@ -185,29 +185,19 @@ bash scripts/run_model.sh --model "work/${SOC_VERSION}-int8-onnx/model.om" \
 
 ## 4. 交叉编译模型
 
-不需要量化时可直接使用原始 ONNX。需要 INT8 时，先准备代表性校准数据和与 CANN 版本匹配的 AMCT 环境。例如，联网下载并在目标 Linux 环境离线安装 CANN 9.2.0 对应的 AMCT：
+在 910B 上验证模型后，可以在 Linux 编译机上为目标 310 重新生成 OM。普通 ONNX 模型的 ATC 转换无需目标 NPU 参与。先确认板端的完整 SoC 型号和 CANN 版本，再选择与板端兼容的 Toolkit。CANN 8.5.0 及之后版本还需要安装与目标芯片匹配的 `ops` 算子包。 [ATC `--soc_version` 文档](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/910/devaids/atctool/atlasatcparam_16_0036.html)
+
+**在编译机上生成 OM。** 以下以 `Ascend310B4` 为例，请换成板端的实际型号。`--soc` 对应 ATC 的 `--soc_version`。如果编译机装了多个 CANN 版本，可以用 `--cann-env` 指定对应的 `set_env.sh`。
 
 ```bash
-# 在联网机器下载，并将 work/amct/9.2.0/ 复制到目标机器的仓库相同路径
-bash scripts/download_amct.sh 9.2.0
-
-# 在目标机器激活已准备好依赖的 Python 环境后安装
-source /path/to/amct-venv/bin/activate
-bash scripts/install_amct.sh 9.2.0
+TARGET_SOC=Ascend310B4
+bash scripts/compile.sh --model work/model.onnx --soc "$TARGET_SOC" \
+  --output-dir "work/${TARGET_SOC}-float"
 ```
 
-版本和路径按实际环境替换。选用其他 Toolkit 版本或自定义安装目录时，先加载对应的 `set_env.sh`。安装还需 C++ 编译器、Python 开发头文件及 Toolkit 安装权限。下载内容、依赖配套和离线安装步骤见 [下载和安装 AMCT](docs/deployment-guide.md#下载和安装-amct)。然后生成量化部署 ONNX，在 910B 比较浮点和量化结果；校准步骤和配置见 [INT8 量化](docs/deployment-guide.md#int8-量化)。
+需要 INT8 时，可用第 3.2 节 AMCT-ONNX 生成的 `work/quantized/model_deploy_model.onnx` 作为输入，保持目标 `--soc`，并使用独立的输出目录。如果量化 ONNX 与目标编译环境不兼容，用兼容的 AMCT 环境重新量化。 [310 部署指南](docs/deployment-guide.md#编译-310-并在目标机验收)
 
-使用匹配目标芯片和板端 CANN 的编译环境，替换为实际 SoC 型号：
-
-```bash
-# Compile the ONNX model for the exact target 310 model.
-SOC_310=Ascend310P3
-bash scripts/compile.sh --model work/model.onnx --soc "$SOC_310" \
-  --output-dir work/310-float
-```
-
-将 OM、相同输入和参考输出传到目标 310，按上面的推理方式实际运行并对比。若使用 INT8，也要编译量化部署 ONNX，并在目标机验证精度和性能。编译成功本身不代表目标机验收通过；详见 [310 验收](docs/deployment-guide.md#编译-310-并在目标机验收)。
+**在目标机上验收。** 将 `model.om`、验证输入和 CPU 参考输出复制到目标 310，按第 3.1 节运行并对比输出。部署 INT8 时，再按第 3.2 节用同一验证集比较目标机上的浮点版和 INT8 版，记录精度和性能。 [推理与输出对比](#校验模型结果) · [量化验收](#验证量化结果)
 
 ## 5. 更多
 

@@ -5,7 +5,7 @@
 ## 进机房前
 
 - 准备 ONNX、外部权重文件、验证输入和 CPU 参考输出。需要 INT8 时，另备代表性校准样本、原生配置文件和量化部署 ONNX。
-- 确认 910B 的完整 SoC 型号，以及目标 310 的完整型号和板端 CANN 版本。比如 `Ascend310`、`Ascend310P3`、`Ascend310B4` 是不同目标。编译需要与目标芯片匹配的工具链和算子包。
+- 确认 910B 的完整 SoC 型号，以及目标 310 的完整型号和板端 CANN 版本。比如 `Ascend310`、`Ascend310B4`、`Ascend310B4` 是不同目标。编译需要与目标芯片匹配的工具链和算子包。
 - 910B 可先用现有镜像 `2.10.0.post7-cann9.2.0-910b-ubuntu22.04-py3.12`。用 `docker image inspect` 确认镜像在离线服务器，按现场 NPU 容器运行方式挂载设备和工具目录。编译 310 所需的镜像或 CANN 软件包另行准备。
 - Shell 入口用 Bash 和增强版 util-linux `getopt`。Bash 或 Zsh 终端都运行 `bash scripts/xxx.sh`。所有 Shell 入口都支持 `-h` 和 `--help`。支持 `--cann-env` 的入口可通过该参数加载对应的 `set_env.sh`。
 - Python 工具需要 Python 3.10 或更高版本。直接输入 JPG 或 PNG 及运行 YOLO 示例需要 OpenCV。执行 OM 推理时，使用与板端 CANN 和 Python ABI 配套的厂商 pyACL 或 `ais_bench`。准备 wheel 时使用与目标 Linux 架构和 Python 版本一致的联网环境。AMCT 使用其自身的依赖配套表。
@@ -168,7 +168,7 @@ bash scripts/compile.sh --model work/model.onnx --soc "$SOC_910B" \
 进入已确认支持目标芯片和板端版本的编译环境。下面以 310P3 为示例，按设备完整型号替换。
 
 ```bash
-SOC_310=Ascend310P3
+SOC_310=Ascend310B4
 bash scripts/compile.sh --model work/model.onnx --soc "$SOC_310" \
   --output-dir work/310-float
 bash scripts/compile.sh --model work/quantized/model_deploy_model.onnx \
