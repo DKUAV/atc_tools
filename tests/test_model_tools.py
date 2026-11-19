@@ -15,10 +15,14 @@ import onnx
 import onnxruntime as ort
 from onnx import TensorProto, helper, numpy_helper
 
-from compare_outputs import compare
-from prepare_model import describe_inputs, inspect_onnx, write_calibration
-from run_om import ACL_DEVICE, ACL_HOST, infer
-from tensor_io import Tensor, load_inputs, read_outputs, save_outputs
+from ascend_atc_tools.compare_outputs import compare
+from ascend_atc_tools.prepare_model import (
+    describe_inputs,
+    inspect_onnx,
+    write_calibration,
+)
+from ascend_atc_tools.run_om import ACL_DEVICE, ACL_HOST, infer
+from ascend_atc_tools.tensor_io import Tensor, load_inputs, read_outputs, save_outputs
 
 
 class ModelPreparationTest(unittest.TestCase):

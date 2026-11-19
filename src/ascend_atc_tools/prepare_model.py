@@ -13,7 +13,13 @@ import onnx
 import onnxruntime as ort
 from google.protobuf.message import DecodeError, Message
 
-from tensor_io import Array, Tensor, load_inputs, load_tensor, save_outputs
+from ascend_atc_tools.tensor_io import (
+    Array,
+    Tensor,
+    load_inputs,
+    load_tensor,
+    save_outputs,
+)
 
 
 def external_locations(message: Message) -> Iterator[str]:

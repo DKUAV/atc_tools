@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from tensor_io import Array, parse_pairs, read_outputs
+from ascend_atc_tools.tensor_io import Array, parse_pairs, read_outputs
 
 
 def compare(

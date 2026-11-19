@@ -7,7 +7,7 @@ usage() {
         '  -i, --input          NAME=FILE (.npy, .bin, .jpg, .jpeg, .png), repeatable' \
         '  -o, --output-dir     New directory for raw model outputs' \
         '  -d, --device         Logical device ID (default: 0)' \
-        '  -r, --reference      Directory produced by prepare_model.py reference' \
+        '  -r, --reference      Directory produced by atc-prepare-model reference' \
         '  -a, --atol           Absolute tolerance (default: 0.001)' \
         '  -t, --rtol           Relative tolerance (default: 0.01)' \
         '  -n, --output-map     ONNX_NAME=OM_NAME override, repeatable' \
@@ -48,10 +48,9 @@ elif [[ -n $atol || -n $rtol || ${#compare_args[@]} -gt 0 ]]; then
     fail 'Comparison options require --reference.'
 fi
 load_cann "$env_file"
-python_dir="$(dirname -- "${BASH_SOURCE[0]}")/../python"
-"$python" "$python_dir/run_om.py" --model "$model" --device "$device" --output-dir "$output" \
+"$python" -m ascend_atc_tools.run_om --model "$model" --device "$device" --output-dir "$output" \
     --warmup "$warmup" --repeat "$repeat" "${inputs[@]}"
 if [[ -n $reference ]]; then
-    "$python" "$python_dir/compare_outputs.py" --reference "$reference" --actual "$output" \
+    "$python" -m ascend_atc_tools.compare_outputs --reference "$reference" --actual "$output" \
         --atol "${atol:-0.001}" --rtol "${rtol:-0.01}" "${compare_args[@]}"
 fi

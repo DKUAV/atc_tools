@@ -11,8 +11,7 @@ resolution-markers = [
 
 [[package]]
 name = "ascend-atc-tools"
-version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
@@ -24,6 +23,7 @@ prepare = [
     { name = "onnx" },
     { name = "onnxruntime", version = "1.24.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "onnxruntime", version = "1.32.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "protobuf" },
 ]
 yolo = [
     { name = "opencv-python-headless" },
@@ -42,6 +42,7 @@ requires-dist = [
     { name = "onnx", marker = "extra == 'prepare'", specifier = ">=1.16" },
     { name = "onnxruntime", marker = "extra == 'prepare'", specifier = ">=1.16" },
     { name = "opencv-python-headless", marker = "extra == 'yolo'", specifier = ">=4.8" },
+    { name = "protobuf", marker = "extra == 'prepare'" },
 ]
 provides-extras = ["prepare", "yolo"]
 

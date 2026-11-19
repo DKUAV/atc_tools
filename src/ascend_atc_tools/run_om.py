@@ -14,7 +14,7 @@ from types import ModuleType
 
 import numpy as np
 
-from tensor_io import Array, Tensor, load_inputs, save_outputs
+from ascend_atc_tools.tensor_io import Array, Tensor, load_inputs, save_outputs
 
 ACL_DEVICE = 0
 ACL_HOST = 1

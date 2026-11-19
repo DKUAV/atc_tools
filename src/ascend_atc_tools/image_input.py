@@ -1,4 +1,4 @@
-"""Decode images and prepare RGB tensors with the YOLO resize and padding."""
+"""Decode images and prepare letterboxed RGB tensors."""
 
 from __future__ import annotations
 

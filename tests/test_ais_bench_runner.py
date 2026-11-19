@@ -1,7 +1,8 @@
-"""Check the ais_bench runner's CLI contract without an NPU."""
+"""Check the generic and YOLO ais_bench commands without an NPU."""
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -9,10 +10,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import cv2
 import numpy as np
 
-from run_om_ais_bench import infer, main
-from tensor_io import read_outputs
+from ascend_atc_tools.run_om_ais_bench import infer, main
+from ascend_atc_tools.tensor_io import read_outputs
+from ascend_atc_tools.yolo_image import main as yolo_main
 
 
 class AisBenchRunnerTest(unittest.TestCase):
@@ -111,3 +114,72 @@ class AisBenchRunnerTest(unittest.TestCase):
                         infer(session, [f"x={path}"])
                     session.infer.assert_not_called()
                     session.free_resource.assert_called_once_with()
+
+    def test_yolo_infer_renders_detections_in_image_coordinates(self) -> None:
+        """Use OM dimensions and dtype, release the session, and save detections."""
+        with tempfile.TemporaryDirectory(prefix="atc-yolo-") as directory:
+            root = Path(directory)
+            image_path = root / "image.png"
+            model_path = root / "model.om"
+            output_dir = root / "detections"
+            model_path.touch()
+            encoded, image = cv2.imencode(
+                ".png", np.full((2, 4, 3), (0, 51, 255), dtype=np.uint8)
+            )
+            self.assertTrue(encoded)
+            image.tofile(image_path)
+            session = Mock()
+            session.get_inputs.return_value = [
+                SimpleNamespace(
+                    name="images",
+                    shape=[1, 6, 8, 3],
+                    datatype=SimpleNamespace(name="float16"),
+                    realsize=288,
+                )
+            ]
+            session.get_outputs.return_value = [SimpleNamespace(name="predictions")]
+            session.infer.return_value = [
+                np.array([[[2, 1, 6, 5, 0.75, 1]]], dtype=np.float32)
+            ]
+            constructor = Mock(return_value=session)
+            args = [
+                "atc-yolo-image",
+                "infer",
+                "--model",
+                str(model_path),
+                "--image",
+                str(image_path),
+                "--device",
+                "2",
+                "--layout",
+                "xyxy",
+                "--output-dir",
+                str(output_dir),
+            ]
+            with (
+                patch.object(sys, "argv", args),
+                patch.dict(
+                    sys.modules,
+                    {
+                        "ais_bench.infer.interface": SimpleNamespace(
+                            InferSession=constructor
+                        )
+                    },
+                ),
+            ):
+                yolo_main()
+            constructor.assert_called_once_with(2, str(model_path))
+            tensor = session.infer.call_args.args[0][0]
+            self.assertEqual(session.infer.call_args.kwargs, {"mode": "static"})
+            self.assertEqual(tensor.dtype, np.dtype("float16"))
+            expected = np.full((1, 6, 8, 3), 114 / 255, dtype=np.float16)
+            expected[:, 1:5, :, :] = np.array([1, 0.2, 0], dtype=np.float16)
+            np.testing.assert_array_equal(tensor, expected)
+            session.free_resource.assert_called_once_with()
+            self.assertEqual(
+                json.loads(
+                    (output_dir / "detections.json").read_text(encoding="utf-8")
+                ),
+                [{"xyxy": [1.0, 0.0, 3.0, 2.0], "score": 0.75, "class_id": 1}],
+            )
+            self.assertGreater((output_dir / "annotated.jpg").stat().st_size, 0)

@@ -16,6 +16,16 @@ bash scripts/probe_env.sh
 
 
 
+#### 安装依赖包
+
+在仓库根目录激活 Python 3.10 或更高版本的虚拟环境后，以 editable 模式安装：
+
+```bash
+python3 -m pip install -e '.[prepare,yolo]'
+```
+
+`prepare` 提供 ONNX 模型检查和 CPU 参考推理依赖，`yolo` 提供直接输入图片以及 YOLO 示例所需的 OpenCV。安装时根据 Git 标签和提交生成包版本。 [依赖配置](pyproject.toml)
+
 ### 1.2 数据准备
 
 - 准备 ONNX 模型及外部权重、验证输入（`.npy`、`.bin`、`.jpg` 或 `.png`），以及生成 CPU 参考输出所需的环境。
@@ -34,10 +44,10 @@ bash scripts/probe_env.sh
 
 ```bash
 # Inspect model inputs, outputs, and external weights.
-python3 python/prepare_model.py inspect --model work/model.onnx
+atc-prepare-model inspect --model work/model.onnx
 
 # Generate CPU reference outputs for comparison.
-python3 python/prepare_model.py reference --model work/model.onnx \
+atc-prepare-model reference --model work/model.onnx \
   --input images=work/input.npy --output-dir work/reference
 ```
 

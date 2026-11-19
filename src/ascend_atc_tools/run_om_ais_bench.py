@@ -10,7 +10,74 @@ from typing import Any
 
 import numpy as np
 
-from tensor_io import Array, Tensor, load_inputs, save_outputs
+from ascend_atc_tools.tensor_io import Array, Tensor, load_inputs, save_outputs
+
+
+def create_session(model: Path, device: int) -> Any:
+    """Open an ais_bench session for an OM.
+
+    Parameters
+    ----------
+    model
+        Path to the OM file.
+    device
+        Logical NPU device ID.
+
+    Returns
+    -------
+    Any
+        InferSession whose resources the caller must release.
+
+    Raises
+    ------
+    RuntimeError
+        The vendor inference module could not be loaded.
+    """
+    try:
+        session_type = importlib.import_module("ais_bench.infer.interface").InferSession
+    except (AttributeError, ImportError, OSError) as error:
+        raise RuntimeError(
+            f"Cannot load ais_bench. Check ais_bench, aclruntime, and CANN: {error}"
+        ) from error
+    return session_type(device, str(model))
+
+
+def describe_inputs(session: Any) -> list[Tensor]:
+    """Read and validate the static dense OM inputs in model order.
+
+    Parameters
+    ----------
+    session
+        An active ais_bench InferSession.
+
+    Returns
+    -------
+    list[Tensor]
+        Input names, shapes, and NumPy dtypes.
+
+    Raises
+    ------
+    ValueError
+        The OM has missing or duplicate input names or unsupported tensor sizes.
+    """
+    inputs: list[Tensor] = []
+    for desc in session.get_inputs():
+        shape = tuple(desc.shape)
+        type_name = desc.datatype.name
+        dtype = np.dtype("float64" if type_name == "double64" else type_name)
+        if (
+            any(dim <= 0 for dim in shape)
+            or prod(shape) * dtype.itemsize != desc.realsize
+        ):
+            raise ValueError(
+                f"Expected a static dense input for {desc.name}, got {shape} {dtype}"
+            )
+        inputs.append(Tensor(desc.name, shape, dtype))
+    if not inputs or len({tensor.name for tensor in inputs if tensor.name}) != len(
+        inputs
+    ):
+        raise ValueError("Expected unique, nonempty OM input names.")
+    return inputs
 
 
 def infer(session: Any, arguments: list[str]) -> dict[str, Array]:
@@ -36,24 +103,7 @@ def infer(session: Any, arguments: list[str]) -> dict[str, Array]:
         ais_bench failed or returned an unexpected set of outputs.
     """
     try:
-        inputs: list[Tensor] = []
-        for desc in session.get_inputs():
-            shape = tuple(desc.shape)
-            type_name = desc.datatype.name
-            dtype = np.dtype("float64" if type_name == "double64" else type_name)
-            if (
-                any(dim <= 0 for dim in shape)
-                or prod(shape) * dtype.itemsize != desc.realsize
-            ):
-                raise ValueError(
-                    f"Expected a static dense input for {desc.name}, got {shape} {dtype}"
-                )
-            inputs.append(Tensor(desc.name, shape, dtype))
-        if not inputs or len({tensor.name for tensor in inputs if tensor.name}) != len(
-            inputs
-        ):
-            raise ValueError("Expected unique, nonempty OM input names.")
-
+        inputs = describe_inputs(session)
         names: list[str] = [desc.name for desc in session.get_outputs()]
         if not names or not all(names) or len(set(names)) != len(names):
             raise ValueError("Expected unique, nonempty OM output names.")
@@ -87,14 +137,7 @@ def main() -> None:
     if args.output_dir.exists():
         parser.error(f"Choose a new output directory: {args.output_dir}")
     try:
-        session_type = importlib.import_module("ais_bench.infer.interface").InferSession
-    except (AttributeError, ImportError, OSError) as error:
-        parser.exit(
-            1,
-            f"Cannot load ais_bench. Check ais_bench, aclruntime, and CANN: {error}\n",
-        )
-    try:
-        session = session_type(args.device, str(args.model))
+        session = create_session(args.model, args.device)
         outputs = infer(session, args.input)
         save_outputs(args.output_dir, outputs)
         print(f"ais_bench outputs: {args.output_dir}")

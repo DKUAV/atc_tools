@@ -8,22 +8,26 @@
 - 确认 910B 的完整 SoC 型号，以及目标 310 的完整型号和板端 CANN 版本。比如 `Ascend310`、`Ascend310P3`、`Ascend310B4` 是不同目标。编译需要与目标芯片匹配的工具链和算子包。
 - 910B 可先用现有镜像 `2.10.0.post7-cann9.2.0-910b-ubuntu22.04-py3.12`。用 `docker image inspect` 确认镜像在离线服务器，按现场 NPU 容器运行方式挂载设备和工具目录。编译 310 所需的镜像或 CANN 软件包另行准备。
 - Shell 入口用 Bash 和增强版 util-linux `getopt`。Bash 或 Zsh 终端都运行 `bash scripts/xxx.sh`。所有 Shell 入口都支持 `-h` 和 `--help`。支持 `--cann-env` 的入口可通过该参数加载对应的 `set_env.sh`。
-- 开发环境和 ONNX 准备工具使用 Python 3.10 或更高版本。直接输入 JPG 或 PNG 及运行 YOLO 示例需要 OpenCV。仅运行 OM 和比对输出时，可以直接用板端的 Python 3.9，使用 NumPy 1.21 或更高版本和与板端 CANN、Python ABI 配套的厂商 pyACL。准备 wheel 时使用目标 Linux 架构和 Python 版本的联网环境。AMCT 使用其自身的依赖配套表。
+- Python 工具需要 Python 3.10 或更高版本。直接输入 JPG 或 PNG 及运行 YOLO 示例需要 OpenCV。执行 OM 推理时，使用与板端 CANN 和 Python ABI 配套的厂商 pyACL 或 `ais_bench`。准备 wheel 时使用与目标 Linux 架构和 Python 版本一致的联网环境。AMCT 使用其自身的依赖配套表。
 
-在联网的开发环境可用 `uv sync --extra prepare --extra yolo` 安装 Python 工具依赖。下面命令可在与离线使用环境同架构、同 Python 版本的联网机器上准备 wheelhouse。
+在联网的开发环境可用 `uv sync --extra prepare --extra yolo` 以 editable 模式安装。下面的命令可在与离线使用环境同架构、同 Python 版本的联网机器上准备 wheelhouse，包括 editable 构建所需的 Hatchling 和 Hatch VCS。
 
 ```bash
 mkdir -p work
 uv export --extra prepare --extra yolo --no-dev --no-emit-project \
   --format requirements-txt --output-file work/requirements-tools.txt
 python3 -m pip download --only-binary=:all: -r work/requirements-tools.txt -d work/wheelhouse
+python3 -m pip download --only-binary=:all: hatchling hatch-vcs -d work/wheelhouse
 ```
 
-离线环境中按实际用途安装。下面是仅执行 OM 时的示例。若板端 Python 低于 3.10，单独为板端下载适配的 NumPy wheel。
+将仓库和 wheelhouse 复制到目标环境后，从仓库根目录安装所需功能。
 
 ```bash
-python3 -m pip install --no-index --find-links work/wheelhouse 'numpy>=1.21'
+python3 -m pip install --no-index --find-links work/wheelhouse -e '.[prepare,yolo]'
+python3 -c 'from importlib.metadata import version; print(version("ascend-atc-tools"))'
 ```
+
+安装时根据 Git 标签和提交生成包版本。离线复制工作区时可保留 `.git`，或使用构建好的源码发行包来保留版本。直接从普通源码目录安装时，若版本元数据缺失，则使用 `0.0.0`。仅使用 NPY 或 BIN 执行 OM 推理时，安装基础包即可，再准备所选推理后端。
 
 打包前可为交付目录生成校验清单，在目标机用 `sha256sum -c SHA256SUMS` 检查传输结果。例如在待传输目录中执行下列命令。
 
@@ -31,7 +35,7 @@ python3 -m pip install --no-index --find-links work/wheelhouse 'numpy>=1.21'
 find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 ```
 
-运行前确认实际使用的 Python。可用 `--python` 指向配套解释器。下面命令把探针结果保存到工作目录。
+运行前确认实际使用的 Python 环境已安装本包。可用 `--python` 指向配套解释器。下面命令把探针结果保存到工作目录。
 
 ```bash
 bash scripts/probe_env.sh |& tee work/environment.log
@@ -44,8 +48,8 @@ bash scripts/probe_env.sh |& tee work/environment.log
 从仓库根目录执行命令。下文以单输入 `images` 为例，实际名称和形状以检查结果为准。
 
 ```bash
-python3 python/prepare_model.py inspect --model work/model.onnx
-python3 python/prepare_model.py reference --model work/model.onnx \
+atc-prepare-model inspect --model work/model.onnx
+atc-prepare-model reference --model work/model.onnx \
   --input images=work/input.npy --output-dir work/reference
 ```
 
@@ -92,9 +96,9 @@ bash scripts/run_model.sh --model work/910b-float/model.om --device 0 \
 安装昇腾的 OM 推理版 `ais_bench` 和配套 `aclruntime`。离线使用时提前把 wheel 和依赖放进 wheelhouse。按设备上的 CANN、CPU 架构和 Python ABI 选包，例如 ARM64 Python 3.12 环境对应 `cp312`、`linux_aarch64` 的 `aclruntime` wheel。执行前加载该环境的 CANN `set_env.sh`。 [官方安装与 wheel 清单](https://gitee.com/ascend/tools/blob/master/ais-bench_workload/tool/ais_bench/README.md)
 
 ```bash
-python3 python/run_om_ais_bench.py --model work/910b-float/model.om --device 0 \
+atc-run-om-ais-bench --model work/910b-float/model.om --device 0 \
   --input images=work/input.npy --output-dir work/910b-ais-bench-outputs
-python3 python/compare_outputs.py --reference work/reference \
+atc-compare-outputs --reference work/reference \
   --actual work/910b-ais-bench-outputs
 ```
 
@@ -128,7 +132,7 @@ bash scripts/install_amct.sh 9.2.0
 校准数据应代表业务场景。每个校准 batch 建一个目录，按 ONNX 的输入顺序放 `input_0.npy`、`input_1.npy` 等。同一个输入在所有 batch 中保持 dtype、shape 和预处理一致。另留独立的验证集。
 
 ```bash
-python3 python/prepare_model.py calibration --model work/model.onnx \
+atc-prepare-model calibration --model work/model.onnx \
   --sample work/samples/0001 --sample work/samples/0002 --output-dir work/calibration
 cp configs/amct-onnx.cfg work/amct-onnx.cfg
 ```
@@ -144,7 +148,7 @@ bash scripts/compile.sh --model work/quantized/model_deploy_model.onnx \
   --soc "$SOC_910B" --output-dir work/910b-int8
 ```
 
-`calibration.json` 中有对应的 `input_shape`、`data_types`、`data_dir`。多输入按清单中的顺序传入，Shell 中需引用含分号的整段值。`model_fake_quant_model.onnx` 用于 CPU 精度仿真，若依赖 AMCT 自定义算子库，给 `prepare_model.py reference` 加 `--custom-ops-library /path/to/library.so`，并使用配套的 ONNX Runtime。编译要选 `model_deploy_model.onnx`。
+`calibration.json` 中有对应的 `input_shape`、`data_types`、`data_dir`。多输入按清单中的顺序传入，Shell 中需引用含分号的整段值。`model_fake_quant_model.onnx` 用于 CPU 精度仿真，若依赖 AMCT 自定义算子库，给 `atc-prepare-model reference` 加 `--custom-ops-library /path/to/library.so`，并使用配套的 ONNX Runtime。编译要选 `model_deploy_model.onnx`。
 
 ### ATC 内联校准
 
@@ -177,16 +181,27 @@ bash scripts/compile.sh --model work/quantized/model_deploy_model.onnx \
 
 ## YOLO 单图示例
 
+先准备 OpenCV、`ais_bench` 和 `aclruntime`，并加载对应的 CANN 环境。单图推理从 OM 读取输入尺寸和 dtype，支持一个固定 shape 的单张 RGB 输入和一个检测输出。 [ais_bench 安装说明](#用-ais_bench-的-python-api-执行-om)
+
 ```bash
-python3 examples/yolo/yolo_image.py preprocess --image work/test.jpg \
+atc-yolo-image infer --model work/910b-float/model.om \
+  --image work/test.jpg --device 0 --layout v8 --output-dir work/detections
+```
+
+按模型的输出布局选择 `v5`（`[1,N,5+C]`，含 objectness）、`v8`（`[1,4+C,N]`）或 `xyxy`（`[1,N,6]`，坐标、置信度、类别）。前两种执行按类别 NMS。结果写入 `detections.json` 和 `annotated.jpg`，检测框使用原图坐标。
+
+生成 CPU 参考输入或单独处理已有的预测张量时，可分别运行预处理和后处理。
+
+```bash
+atc-yolo-image preprocess --image work/test.jpg \
   --width 640 --height 640 --output work/input.npy
 # After running the OM, use outputs.json to locate the prediction tensor.
-python3 examples/yolo/yolo_image.py postprocess --image work/test.jpg \
+atc-yolo-image postprocess --image work/test.jpg \
   --width 640 --height 640 --predictions work/910b-float-outputs/output_0.npy \
   --layout v8 --output-dir work/detections
 ```
 
-预处理示例使用等比缩放和填充、RGB、NCHW、除以 255，默认输出 FP32，支持 `--dtype float16`。执行前核对模型原始预处理。后处理按实际导出布局选 `v5`（`[1,N,5+C]` 含 objectness）、`v8`（`[1,4+C,N]`）、或 `xyxy`（`[1,N,6]`，坐标、置信度、类别）。前两种执行按类别 NMS。产物为 `detections.json` 和 `annotated.jpg`。其他检测头、分割或姿态估计模型可沿用通用工具，再提供对应后处理。
+预处理使用等比缩放和填充，转为 RGB 后将浮点输入除以 255。独立的 `preprocess` 命令写出 NCHW 张量，默认 FP32，也支持 `--dtype float16`。使用前核对模型的原始预处理。
 
 ## 排障
 
@@ -204,7 +219,7 @@ python3 examples/yolo/yolo_image.py postprocess --image work/test.jpg \
 uv run ruff check
 uv run ruff format --check
 uv run ty check
-PYTHONPATH=python uv run python -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
 ```
 
 本地测试使用 ONNX Runtime CPU 和模拟 pyACL，可验证数据格式、参数传递所依赖的接口和资源释放。ATC、AMCT 与 NPU 推理按本文流程在目标环境验收。

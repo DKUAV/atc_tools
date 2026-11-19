@@ -120,6 +120,41 @@ def load_inputs(tensors: list[Tensor], arguments: list[str]) -> dict[str, Array]
     }
 
 
+def image_geometry(tensor: Tensor) -> tuple[bool, int, int]:
+    """Resolve the layout and spatial dimensions of a model image input.
+
+    Parameters
+    ----------
+    tensor
+        Static model input descriptor.
+
+    Returns
+    -------
+    tuple[bool, int, int]
+        Whether channels come first, followed by height and width.
+
+    Raises
+    ------
+    ValueError
+        The tensor cannot accept a single RGB image in a supported layout and dtype.
+    """
+    shape = tensor.shape
+    if (
+        len(shape) != 4
+        or shape[0] != 1
+        or any(dim <= 0 for dim in shape)
+        or (shape[1] == 3) == (shape[3] == 3)
+        or (tensor.dtype.kind != "f" and tensor.dtype != np.dtype("uint8"))
+    ):
+        raise ValueError(
+            f"{tensor.name}: image input requires an unambiguous batch-one RGB NCHW or NHWC "
+            f"tensor with a float or uint8 dtype, got {shape} {tensor.dtype}. Use .npy or .bin."
+        )
+    if shape[1] == 3:
+        return True, shape[2], shape[3]
+    return False, shape[1], shape[2]
+
+
 def _load_input(path: Path, tensor: Tensor) -> Array:
     """Read a named inference input according to its file extension.
 
@@ -159,27 +194,14 @@ def _load_input(path: Path, tensor: Tensor) -> Array:
             f"{tensor.name}: expected a .npy, .bin, .jpg, .jpeg, or .png file: {path}"
         )
 
-    shape = tensor.shape
-    if (
-        len(shape) != 4
-        or shape[0] != 1
-        or any(dim <= 0 for dim in shape)
-        or (shape[1] == 3) == (shape[3] == 3)
-        or (tensor.dtype.kind != "f" and tensor.dtype != np.dtype("uint8"))
-    ):
-        raise ValueError(
-            f"{tensor.name}: image input requires an unambiguous batch-one RGB NCHW or NHWC "
-            f"tensor with a float or uint8 dtype, got {shape} {tensor.dtype}. Use .npy or .bin."
-        )
+    channels_first, height, width = image_geometry(tensor)
     try:
-        from image_input import image_tensor, letterbox, read_image
+        from ascend_atc_tools.image_input import image_tensor, letterbox, read_image
     except ImportError as error:
         raise ValueError(
             "JPG/PNG input requires OpenCV. Install opencv-python-headless."
         ) from error
 
-    channels_first = shape[1] == 3
-    height, width = shape[2:] if channels_first else shape[1:3]
     canvas, _, _, _ = letterbox(read_image(path), width, height)
     return image_tensor(canvas, channels_first, tensor.dtype)
 
