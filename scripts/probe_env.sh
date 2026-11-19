@@ -3,7 +3,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/_shell.sh"
 
 usage() {
     printf '%s\n' 'Usage: bash scripts/probe_env.sh [-e CANN_ENV] [-p PYTHON]' \
-        '  -e, --cann-env   Source this CANN set_env.sh' \
+        '  -e, --cann-env   Override automatic CANN set_env.sh selection' \
         '  -p, --python     Python executable (default: python3)' \
         '  -h, --help       Show this help'
 }

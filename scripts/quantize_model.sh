@@ -9,7 +9,7 @@ usage() {
         '  -t, --data-types      AMCT input data types' \
         '  -o, --output-dir      New directory for quantized ONNX models and logs' \
         '  -c, --config          Native AMCT ONNX calibration config' \
-        '  -e, --cann-env        CANN set_env.sh, if needed' \
+        '  -e, --cann-env        Override automatic CANN set_env.sh selection' \
         '  -h, --help            Show this help'
 }
 

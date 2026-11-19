@@ -17,14 +17,27 @@ parse_options() {
 }
 
 load_cann() {
-    local env_file=$1
-    if [[ -n $env_file ]]; then
-        [[ -f $env_file ]] || fail "CANN environment file not found: $env_file"
-        # Vendor scripts may expand unset variables.
-        set +u
-        source "$env_file"
-        set -u
+    local env_file=${1:-}
+    if [[ -z $env_file ]]; then
+        if [[ -d ${ASCEND_HOME_PATH:-} || -d ${ASCEND_TOOLKIT_HOME:-} ]]; then
+            return 0
+        fi
+        for env_file in /usr/local/Ascend/cann/set_env.sh /usr/local/Ascend/ascend-toolkit/set_env.sh; do
+            if [[ -f $env_file ]]; then
+                break
+            fi
+        done
+        if [[ ! -f $env_file ]]; then
+            return 0
+        fi
     fi
+    [[ -f $env_file ]] || fail "CANN environment file not found: $env_file"
+    # A relative basename must resolve in the current directory.
+    [[ $env_file == */* ]] || env_file="./$env_file"
+    # Vendor scripts may expand unset variables.
+    set +u
+    source "$env_file"
+    set -u
 }
 
 run_logged() {

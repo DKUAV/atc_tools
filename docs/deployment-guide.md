@@ -37,7 +37,7 @@ find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA25
 bash scripts/probe_env.sh |& tee work/environment.log
 ```
 
-环境尚未加载时，给探针、编译和推理脚本传入 `--cann-env /实际安装目录/set_env.sh`。探针会逐项报告可用工具、环境变量、设备和 Python 模块。编译机主要检查 ATC 和算子包，推理机还需要设备可见和 `import acl` 成功。
+探针、编译、量化和推理脚本优先使用 `--cann-env /实际安装目录/set_env.sh` 指定的文件，其次沿用当前已加载的 CANN 环境。需要自动加载时，先查找 `/usr/local/Ascend/cann/set_env.sh`，再查找旧版的 `/usr/local/Ascend/ascend-toolkit/set_env.sh`。探针会逐项报告可用工具、环境变量、设备和 Python 模块。编译机主要检查 ATC 和算子包，推理机还需要设备可见和 `import acl` 成功。
 
 ## 准备模型输入和 CPU 参考输出
 
@@ -111,7 +111,6 @@ python3 python/compare_outputs.py --reference work/reference \
 bash scripts/download_amct.sh 9.2.0
 
 # On the target Linux machine, after copying work/amct/9.2.0/
-source /usr/local/Ascend/cann/set_env.sh
 source /path/to/amct-venv/bin/activate
 bash scripts/install_amct.sh 9.2.0
 ```
@@ -119,6 +118,8 @@ bash scripts/install_amct.sh 9.2.0
 目标机需预装同版本 CANN Toolkit、C++ 编译器和 Python 开发头文件，并以有权安装 Toolkit 组件的用户执行。先在所选 Python 环境中准备 pip、setuptools 和配套依赖。Python 3.10/3.11 可用 `onnx==1.14.0`、`onnxruntime==1.16.0`、`numpy==1.24.4`、`protobuf==3.20.3`。Python 3.12 可用 `onnx==1.18.0`、`onnxruntime==1.20.0`、`numpy>=2.0.0`、`protobuf==3.20.3`。离线环境可按前面的 wheelhouse 流程准备这些依赖。 [华为 AMCT（ONNX）配套表](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/920beta2/devaids/amct/atlasamct_16_0014.html)
 
 安装脚本从仓库的 `work/amct/<版本>/` 按目标机架构选包，在当前 Python 环境安装 ONNX wheel 并编译自定义算子，再把 ACL 装到已加载的 Toolkit 安装位置。整个安装步骤可离线执行。 [华为 AMCT 安装指南](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/910/devaids/amct/atlasamct_16_0025.html)
+
+安装脚本会沿用当前 CANN 环境或自动加载默认安装，并核对 Toolkit 版本。需安装到非默认版本或自定义目录时，先用 `source` 加载对应的 `set_env.sh`。
 
 ### AMCT ONNX 预校准
 

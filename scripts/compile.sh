@@ -7,7 +7,7 @@ usage() {
         '  -s, --soc                         Exact ATC target SoC' \
         '  -o, --output-dir                  New directory for model.om and logs' \
         '  -i, --input-shape                 ATC input shape override' \
-        '  -e, --cann-env                    CANN set_env.sh' \
+        '  -e, --cann-env                    Override automatic CANN set_env.sh selection' \
         '  -c, --compression-optimize-conf   Native ATC compression config' \
         '  -a, --atc-arg                     One extra ATC argument, repeatable' \
         '  -h, --help                        Show this help'

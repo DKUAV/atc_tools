@@ -14,7 +14,7 @@ usage() {
         '  -w, --warmup         Warmup runs (default: 0)' \
         '  -b, --repeat         Timed runs (default: 1)' \
         '  -p, --python         Python executable (default: python3)' \
-        '  -e, --cann-env       CANN set_env.sh' \
+        '  -e, --cann-env       Override automatic CANN set_env.sh selection' \
         '  -h, --help           Show this help'
 }
 

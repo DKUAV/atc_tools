@@ -8,9 +8,13 @@ arch=$(uname -m)
 archive="$package_dir/$(amct_archive_name "$arch")"
 [[ -s $archive ]] || fail "AMCT archive missing: $archive. Run download_amct.sh first."
 
+load_cann
 # The ACL installer takes the parent of the versioned Toolkit directory.
-toolkit=${ASCEND_HOME_PATH:-${ASCEND_TOOLKIT_HOME:-}}
-[[ -n $toolkit && -d $toolkit ]] || fail 'Source set_env.sh for the target CANN Toolkit first.'
+toolkit=${ASCEND_HOME_PATH:-}
+if [[ ! -d $toolkit ]]; then
+    toolkit=${ASCEND_TOOLKIT_HOME:-}
+fi
+[[ -d $toolkit ]] || fail 'Source set_env.sh for the target CANN Toolkit first.'
 toolkit=$(readlink -f -- "$toolkit")
 if [[ ${toolkit##*/} != "cann-$cann_version" ]]; then
     info="$toolkit/$arch-linux/ascend_toolkit_install.info"
