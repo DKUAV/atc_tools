@@ -49,6 +49,31 @@ def _add_onnx_commands(parser: argparse.ArgumentParser) -> None:
     reference.add_argument("--custom-ops-library", type=Path)
     calibration.add_argument("--sample", required=True, action="append", type=Path)
 
+    quantize = commands.add_parser(
+        "quantize", help="Quantize a single-input ONNX model from an image directory"
+    )
+    quantize.set_defaults(
+        command_parser=quantize,
+        handler_module="atc_tools.model.quantize",
+        extra="prepare,yolo",
+    )
+    quantize.add_argument(
+        "--model", required=True, type=Path, help="Floating-point ONNX"
+    )
+    quantize.add_argument(
+        "--dataset", required=True, type=Path, help="Directory of JPG and PNG images"
+    )
+    quantize.add_argument(
+        "--output-dir", type=Path, help="New directory (default: <model-stem>-int8)"
+    )
+    settings = quantize.add_mutually_exclusive_group()
+    settings.add_argument(
+        "--config", type=Path, help="Native AMCT-ONNX calibration .cfg"
+    )
+    settings.add_argument(
+        "--batch-num", type=int, help="Number of images to calibrate (default: all)"
+    )
+
 
 def _add_om_commands(parser: argparse.ArgumentParser) -> None:
     """Register OM inference and tensor comparison commands.

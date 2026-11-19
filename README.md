@@ -110,7 +110,7 @@ bash scripts/run_model.sh --model work/"$SOC_VERSION"-float/model.om --device 0 
 
 ### 3.2 编译量化模型
 
-下面从 `work/model.onnx` 生成 INT8 OM。两种方式使用同一份校准数据，按需要选择一种。
+下面从 `work/model.onnx` 生成 INT8 OM。单输入图片模型可直接走 [AMCT-ONNX 一键量化](#使用-amct-onnx)。使用 AMCT-ACL 或已有张量数据时，先准备下面的校准数据。
 
 #### 准备校准数据
 
@@ -148,7 +148,20 @@ bash scripts/compile.sh --model work/model.onnx --soc "$SOC_VERSION" \
 
 #### 使用 AMCT-ONNX
 
-先激活与 AMCT-ONNX 配套的 Python 环境，确认 `amct_onnx calibration --help` 可用。复制量化配置，把 `batch_num` 设为实际使用的校准 batch 数，本例为 `2`。 [AMCT ONNX 环境](docs/deployment-guide.md#下载和安装-amct)
+先激活与 AMCT-ONNX 配套的 Python 环境，确认 `amct_onnx calibration --help` 可用。 [AMCT ONNX 环境](docs/deployment-guide.md#下载和安装-amct)
+
+**从图片目录一键量化。** 把 JPG、JPEG 或 PNG 平铺在一个目录中，图片文件名可以自定。命令会从 ONNX 读取输入名、shape 和 dtype，按文件名顺序逐张预处理并调用 AMCT-ONNX。
+
+```bash
+atc_tools onnx quantize --model work/model.onnx \
+  --dataset work/images --output-dir work/quantized
+```
+
+适用于固定尺寸、batch 为 1 的单输入 RGB 模型，支持 NCHW 和 NHWC。预处理使用 YOLO 规则，等比缩放并填充 114，转换为 RGB，浮点输入除以 255。模型使用其他预处理时，先自行生成张量，再走下面的流程。
+
+默认使用全部图片。加 `--batch-num 50` 可只用前 50 张。要设置跳过层、量化算法等参数，可加 `--config work/amct-onnx.cfg`，校准张数由原生配置中的 `batch_num` 指定。这两个参数二选一。省略 `--output-dir` 时，输出目录为模型旁边的 `<模型名>-int8/`。 [AMCT-ONNX 配置字段](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/920beta2/devaids/amct/atlasamct_16_0168.html)
+
+**从已预处理的张量量化。** 复制量化配置，把 `batch_num` 设为实际使用的校准 batch 数，本例为 `2`。
 
 ```bash
 cp configs/amct-onnx.cfg work/amct-onnx.cfg
@@ -163,7 +176,7 @@ bash scripts/quantize_model.sh --model work/model.onnx \
   --output-dir work/quantized
 ```
 
-量化生成的 `model_fake_quant_model.onnx` 可用于精度仿真。回到编译环境，用 `model_deploy_model.onnx` 生成 OM。
+两种流程都会生成 `model_deploy_model.onnx` 和 `model_fake_quant_model.onnx`。部署模型用于 ATC 编译，仿真模型用于精度仿真。一键量化的 AMCT 日志保存在输出目录中的 `amct-onnx.log`。
 
 ```bash
 bash scripts/compile.sh --model work/quantized/model_deploy_model.onnx \
