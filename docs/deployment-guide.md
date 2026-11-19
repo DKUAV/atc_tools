@@ -201,6 +201,8 @@ python3 examples/yolo/yolo_image.py postprocess --image work/test.jpg \
 ## 本地开发检查
 
 ```bash
+uv run ruff check
+uv run ruff format --check
 uv run ty check
 PYTHONPATH=python uv run python -m unittest discover -s tests -v
 ```

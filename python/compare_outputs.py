@@ -11,7 +11,9 @@ import numpy as np
 from tensor_io import Array, parse_pairs, read_outputs
 
 
-def compare(reference: Array, actual: Array, atol: float, rtol: float) -> tuple[bool, str]:
+def compare(
+    reference: Array, actual: Array, atol: float, rtol: float
+) -> tuple[bool, str]:
     """Compare shapes, data types and values using reference-relative tolerance.
 
     Parameters
@@ -45,7 +47,9 @@ def compare(reference: Array, actual: Array, atol: float, rtol: float) -> tuple[
     count = int(np.count_nonzero(violations))
     location = ""
     if count:
-        index = np.unravel_index(int(np.argmax(np.where(violations, error, -1.0))), ref.shape)
+        index = np.unravel_index(
+            int(np.argmax(np.where(violations, error, -1.0))), ref.shape
+        )
         location = f", largest failing error at {tuple(map(int, index))}: ref={ref[index]:.6g}, got={got[index]:.6g}"
     return count == 0, (
         f"{types}, max_abs={float(error.max(initial=0)):.6g}, "
@@ -60,7 +64,9 @@ def main() -> int:
     parser.add_argument("--actual", required=True, type=Path)
     parser.add_argument("--atol", type=float, default=0.001)
     parser.add_argument("--rtol", type=float, default=0.01)
-    parser.add_argument("--output-map", action="append", default=[], metavar="REFERENCE=ACTUAL")
+    parser.add_argument(
+        "--output-map", action="append", default=[], metavar="REFERENCE=ACTUAL"
+    )
     args = parser.parse_args()
     if any(not math.isfinite(value) or value < 0 for value in (args.atol, args.rtol)):
         parser.error("Tolerances must be finite and nonnegative.")
@@ -69,13 +75,22 @@ def main() -> int:
         actual = read_outputs(args.actual)
         overrides = parse_pairs(args.output_map)
         if overrides.keys() - reference.keys():
-            raise ValueError(f"Unknown reference names: {sorted(overrides.keys() - reference.keys())}")
+            raise ValueError(
+                f"Unknown reference names: {sorted(overrides.keys() - reference.keys())}"
+            )
         names = {name: overrides.get(name, name) for name in reference}
-        if len(set(names.values())) != len(names) or set(names.values()) != actual.keys():
-            raise ValueError(f"Output names do not match: expected {sorted(names.values())}, got {sorted(actual)}")
+        if (
+            len(set(names.values())) != len(names)
+            or set(names.values()) != actual.keys()
+        ):
+            raise ValueError(
+                f"Output names do not match: expected {sorted(names.values())}, got {sorted(actual)}"
+            )
         passed = True
         for name, actual_name in names.items():
-            matched, detail = compare(reference[name], actual[actual_name], args.atol, args.rtol)
+            matched, detail = compare(
+                reference[name], actual[actual_name], args.atol, args.rtol
+            )
             print(f"{'PASS' if matched else 'FAIL'} {name}: {detail}")
             passed &= matched
         return 0 if passed else 1

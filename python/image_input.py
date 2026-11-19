@@ -64,9 +64,11 @@ def letterbox(
     resized_height = max(1, round(source_height * scale))
     left = (width - resized_width) // 2
     top = (height - resized_height) // 2
-    resized = cv2.resize(image, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
+    resized = cv2.resize(
+        image, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR
+    )
     canvas = np.full((height, width, 3), 114, dtype=np.uint8)
-    canvas[top:top + resized_height, left:left + resized_width] = resized
+    canvas[top : top + resized_height, left : left + resized_width] = resized
     return canvas, scale, left, top
 
 

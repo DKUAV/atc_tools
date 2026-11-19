@@ -41,10 +41,17 @@ def infer(session: Any, arguments: list[str]) -> dict[str, Array]:
             shape = tuple(desc.shape)
             type_name = desc.datatype.name
             dtype = np.dtype("float64" if type_name == "double64" else type_name)
-            if any(dim <= 0 for dim in shape) or prod(shape) * dtype.itemsize != desc.realsize:
-                raise ValueError(f"Expected a static dense input for {desc.name}, got {shape} {dtype}")
+            if (
+                any(dim <= 0 for dim in shape)
+                or prod(shape) * dtype.itemsize != desc.realsize
+            ):
+                raise ValueError(
+                    f"Expected a static dense input for {desc.name}, got {shape} {dtype}"
+                )
             inputs.append(Tensor(desc.name, shape, dtype))
-        if not inputs or len({tensor.name for tensor in inputs if tensor.name}) != len(inputs):
+        if not inputs or len({tensor.name for tensor in inputs if tensor.name}) != len(
+            inputs
+        ):
             raise ValueError("Expected unique, nonempty OM input names.")
 
         names: list[str] = [desc.name for desc in session.get_outputs()]
@@ -65,7 +72,10 @@ def main() -> None:
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument(
-        "--input", required=True, action="append", metavar="NAME=FILE",
+        "--input",
+        required=True,
+        action="append",
+        metavar="NAME=FILE",
         help="Model input file (.npy, .bin, .jpg, .jpeg, or .png), repeatable.",
     )
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -79,7 +89,10 @@ def main() -> None:
     try:
         session_type = importlib.import_module("ais_bench.infer.interface").InferSession
     except (AttributeError, ImportError, OSError) as error:
-        parser.exit(1, f"Cannot load ais_bench. Check ais_bench, aclruntime, and CANN: {error}\n")
+        parser.exit(
+            1,
+            f"Cannot load ais_bench. Check ais_bench, aclruntime, and CANN: {error}\n",
+        )
     try:
         session = session_type(args.device, str(args.model))
         outputs = infer(session, args.input)

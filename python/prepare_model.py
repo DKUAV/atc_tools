@@ -29,7 +29,9 @@ def external_locations(message: Message) -> Iterator[str]:
     str
         The location string recorded in an external tensor.
     """
-    if isinstance(message, onnx.TensorProto) and onnx.external_data_helper.uses_external_data(message):
+    if isinstance(
+        message, onnx.TensorProto
+    ) and onnx.external_data_helper.uses_external_data(message):
         for entry in message.external_data:
             if entry.key == "location":
                 yield entry.value
@@ -74,7 +76,11 @@ def inspect_onnx(path: Path) -> dict[str, Any]:
             Value name, element type, and symbolic or static shape.
         """
         if not node.type.HasField("tensor_type"):
-            return {"name": node.name, "type": node.type.WhichOneof("value"), "shape": None}
+            return {
+                "name": node.name,
+                "type": node.type.WhichOneof("value"),
+                "shape": None,
+            }
         tensor = node.type.tensor_type
         shape = None
         if tensor.HasField("shape"):
@@ -84,15 +90,27 @@ def inspect_onnx(path: Path) -> dict[str, Any]:
                     shape.append(dim.dim_value)
                 else:
                     shape.append(dim.dim_param or None)
-        return {"name": node.name, "type": onnx.TensorProto.DataType.Name(tensor.elem_type), "shape": shape}
+        return {
+            "name": node.name,
+            "type": onnx.TensorProto.DataType.Name(tensor.elem_type),
+            "shape": shape,
+        }
 
     locations = sorted(set(external_locations(model)))
     return {
-        "opsets": {opset.domain or "ai.onnx": opset.version for opset in model.opset_import},
-        "inputs": [metadata(node) for node in model.graph.input if node.name not in initializers],
+        "opsets": {
+            opset.domain or "ai.onnx": opset.version for opset in model.opset_import
+        },
+        "inputs": [
+            metadata(node)
+            for node in model.graph.input
+            if node.name not in initializers
+        ],
         "outputs": [metadata(node) for node in model.graph.output],
         "external_weights": locations,
-        "missing_external_weights": [location for location in locations if not (path.parent / location).is_file()],
+        "missing_external_weights": [
+            location for location in locations if not (path.parent / location).is_file()
+        ],
     }
 
 
@@ -117,21 +135,37 @@ def describe_inputs(session: ort.InferenceSession) -> list[Tensor]:
     tensors = []
     for node in session.get_inputs():
         if any(type(dim) is not int or dim <= 0 for dim in node.shape):
-            raise ValueError(f"Input {node.name} must have a positive static shape, got {node.shape}")
+            raise ValueError(
+                f"Input {node.name} must have a positive static shape, got {node.shape}"
+            )
         name = node.type.removeprefix("tensor(").removesuffix(")")
         names = {"float": "float32", "double": "float64", "bool": "bool"}
         if not node.type.startswith("tensor(") or name not in {
-            "float", "float16", "double", "bool", "int8", "uint8", "int16", "uint16",
-            "int32", "uint32", "int64", "uint64",
+            "float",
+            "float16",
+            "double",
+            "bool",
+            "int8",
+            "uint8",
+            "int16",
+            "uint16",
+            "int32",
+            "uint32",
+            "int64",
+            "uint64",
         }:
             raise ValueError(f"Unsupported input type for {node.name}: {node.type}")
-        tensors.append(Tensor(node.name, tuple(node.shape), np.dtype(names.get(name, name))))
+        tensors.append(
+            Tensor(node.name, tuple(node.shape), np.dtype(names.get(name, name)))
+        )
     if not tensors:
         raise ValueError("The model has no runtime inputs.")
     return tensors
 
 
-def write_calibration(tensors: list[Tensor], samples: list[Path], output: Path) -> dict[str, str]:
+def write_calibration(
+    tensors: list[Tensor], samples: list[Path], output: Path
+) -> dict[str, str]:
     """Write one AMCT directory and one concatenated ATC .bin per input.
 
     Parameters
@@ -176,7 +210,9 @@ def write_calibration(tensors: list[Tensor], samples: list[Path], output: Path) 
         ),
         "data_types": ";".join(tensor.dtype.name for tensor in tensors),
         "data_dir": ";".join(str(directory) for directory in dirs),
-        "input_data_dir": ",".join(str(directory.with_suffix(".bin")) for directory in dirs),
+        "input_data_dir": ",".join(
+            str(directory.with_suffix(".bin")) for directory in dirs
+        ),
     }
 
 
@@ -184,17 +220,28 @@ def main() -> None:
     """Run the selected ONNX preparation command."""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    inspect_parser = commands.add_parser("inspect", help="Show ONNX input and output details")
-    reference_parser = commands.add_parser("reference", help="Generate CPU reference outputs")
-    calibration_parser = commands.add_parser("calibration", help="Prepare calibration binary files")
+    inspect_parser = commands.add_parser(
+        "inspect", help="Show ONNX input and output details"
+    )
+    reference_parser = commands.add_parser(
+        "reference", help="Generate CPU reference outputs"
+    )
+    calibration_parser = commands.add_parser(
+        "calibration", help="Prepare calibration binary files"
+    )
     for command in (inspect_parser, reference_parser, calibration_parser):
         command.add_argument("--model", required=True, type=Path)
     reference_parser.add_argument(
-        "--input", required=True, action="append", metavar="NAME=FILE",
+        "--input",
+        required=True,
+        action="append",
+        metavar="NAME=FILE",
         help="Model input file (.npy, .bin, .jpg, .jpeg, or .png), repeatable.",
     )
     reference_parser.add_argument("--custom-ops-library", type=Path)
-    calibration_parser.add_argument("--sample", required=True, action="append", type=Path)
+    calibration_parser.add_argument(
+        "--sample", required=True, action="append", type=Path
+    )
     for command in (reference_parser, calibration_parser):
         command.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
@@ -205,7 +252,9 @@ def main() -> None:
         options = ort.SessionOptions()
         if getattr(args, "custom_ops_library", None):
             options.register_custom_ops_library(str(args.custom_ops_library.resolve()))
-        session = ort.InferenceSession(str(args.model), options, providers=["CPUExecutionProvider"])
+        session = ort.InferenceSession(
+            str(args.model), options, providers=["CPUExecutionProvider"]
+        )
         tensors = describe_inputs(session)
         if args.command == "reference":
             inputs = load_inputs(tensors, args.input)
@@ -219,8 +268,12 @@ def main() -> None:
             save_outputs(args.output_dir, outputs)
         else:
             config = write_calibration(tensors, args.sample, args.output_dir)
-            contents = json.dumps({"samples": len(args.sample), **config}, indent=2) + "\n"
-            (args.output_dir / "calibration.json").write_text(contents, encoding="utf-8")
+            contents = (
+                json.dumps({"samples": len(args.sample), **config}, indent=2) + "\n"
+            )
+            (args.output_dir / "calibration.json").write_text(
+                contents, encoding="utf-8"
+            )
             print(contents, end="")
     except (OSError, RuntimeError, TypeError, ValueError, DecodeError) as error:
         parser.exit(1, f"Preparation failed: {error}\n")

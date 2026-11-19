@@ -42,13 +42,21 @@ class AisBenchRunnerTest(unittest.TestCase):
             constructor = Mock(return_value=session)
             module = SimpleNamespace(InferSession=constructor)
             args = [
-                "run_om_ais_bench.py", "--model", str(model), "--device", "2",
-                "--input", f"right={root / 'right.bin'}",
-                "--input", f"left={root / 'left.npy'}",
-                "--output-dir", str(root / "outputs"),
+                "run_om_ais_bench.py",
+                "--model",
+                str(model),
+                "--device",
+                "2",
+                "--input",
+                f"right={root / 'right.bin'}",
+                "--input",
+                f"left={root / 'left.npy'}",
+                "--output-dir",
+                str(root / "outputs"),
             ]
-            with patch.object(sys, "argv", args), patch.dict(
-                sys.modules, {"ais_bench.infer.interface": module}
+            with (
+                patch.object(sys, "argv", args),
+                patch.dict(sys.modules, {"ais_bench.infer.interface": module}),
             ):
                 main()
             constructor.assert_called_once_with(2, str(model))
@@ -70,7 +78,10 @@ class AisBenchRunnerTest(unittest.TestCase):
             session = Mock()
             session.get_inputs.return_value = [
                 SimpleNamespace(
-                    name="x", shape=[2], datatype=SimpleNamespace(name="float32"), realsize=8
+                    name="x",
+                    shape=[2],
+                    datatype=SimpleNamespace(name="float32"),
+                    realsize=8,
                 )
             ]
             session.get_outputs.return_value = [SimpleNamespace(name="y")]
@@ -89,7 +100,10 @@ class AisBenchRunnerTest(unittest.TestCase):
                     session = Mock()
                     session.get_inputs.return_value = [
                         SimpleNamespace(
-                            name="x", shape=[2], datatype=SimpleNamespace(name="float32"), realsize=8
+                            name="x",
+                            shape=[2],
+                            datatype=SimpleNamespace(name="float32"),
+                            realsize=8,
                         )
                     ]
                     session.get_outputs.return_value = [SimpleNamespace(name="y")]

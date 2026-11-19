@@ -32,11 +32,23 @@ class ModelPreparationTest(unittest.TestCase):
             result = helper.make_tensor_value_info("y", TensorProto.FLOAT, ["batch", 2])
             weights = numpy_helper.from_array(np.ones(2, dtype=np.float32), name="w")
             graph = helper.make_graph(
-                [helper.make_node("Add", ["x", "w"], ["y"])], "add", [value], [result], [weights]
+                [helper.make_node("Add", ["x", "w"], ["y"])],
+                "add",
+                [value],
+                [result],
+                [weights],
             )
-            model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8)
+            model = helper.make_model(
+                graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8
+            )
             path = root / "external.onnx"
-            onnx.save_model(model, path, save_as_external_data=True, location="weights.bin", size_threshold=0)
+            onnx.save_model(
+                model,
+                path,
+                save_as_external_data=True,
+                location="weights.bin",
+                size_threshold=0,
+            )
             self.assertEqual(inspect_onnx(path)["missing_external_weights"], [])
             (root / "weights.bin").unlink()
             metadata = inspect_onnx(path)
@@ -48,12 +60,21 @@ class ModelPreparationTest(unittest.TestCase):
         """Preserve input order, batch boundaries, and exact float32 bytes."""
         with tempfile.TemporaryDirectory(prefix="atc-test-") as directory:
             root = Path(directory)
-            inputs = [helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, 2]) for name in ("x", "y")]
+            inputs = [
+                helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, 2])
+                for name in ("x", "y")
+            ]
             result = helper.make_tensor_value_info("sum", TensorProto.FLOAT, [1, 2])
-            graph = helper.make_graph([helper.make_node("Add", ["x", "y"], ["sum"])], "add", inputs, [result])
-            model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8)
+            graph = helper.make_graph(
+                [helper.make_node("Add", ["x", "y"], ["sum"])], "add", inputs, [result]
+            )
+            model = helper.make_model(
+                graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8
+            )
             onnx.save(model, root / "model.onnx")
-            session = ort.InferenceSession(str(root / "model.onnx"), providers=["CPUExecutionProvider"])
+            session = ort.InferenceSession(
+                str(root / "model.onnx"), providers=["CPUExecutionProvider"]
+            )
             specs = describe_inputs(session)
             first = np.array([[1, 3]], dtype=np.float32)
             second = np.array([[6, 7]], dtype=np.float32)
@@ -62,20 +83,29 @@ class ModelPreparationTest(unittest.TestCase):
                 batch.mkdir()
                 np.save(batch / "input_0.npy", x)
                 np.save(batch / "input_1.npy", y)
-            named = load_inputs(specs, [f"y={root / '0/input_1.npy'}", f"x={root / '0/input_0.npy'}"])
+            named = load_inputs(
+                specs, [f"y={root / '0/input_1.npy'}", f"x={root / '0/input_0.npy'}"]
+            )
             output = session.run(["sum"], named)[0]
             self.assertIsInstance(output, np.ndarray)
             if isinstance(output, np.ndarray):
                 save_outputs(root / "reference", {"sum": output})
-            np.testing.assert_array_equal(read_outputs(root / "reference")["sum"], first + second)
+            np.testing.assert_array_equal(
+                read_outputs(root / "reference")["sum"], first + second
+            )
             with self.assertRaisesRegex(ValueError, "missing"):
                 load_inputs(specs, [f"x={root / '0/input_0.npy'}"])
             output_dir = root / "calibration"
             metadata = write_calibration(specs, [root / "0", root / "1"], output_dir)
             self.assertEqual(metadata["input_shape"], "x:1,2;y:1,2")
             self.assertEqual(metadata["atc_input_shape"], "x:2,2;y:2,2")
-            self.assertEqual((output_dir / "input_0.bin").read_bytes(), first.tobytes() + second.tobytes())
-            self.assertEqual((output_dir / "input_1/00000001.bin").read_bytes(), first.tobytes())
+            self.assertEqual(
+                (output_dir / "input_0.bin").read_bytes(),
+                first.tobytes() + second.tobytes(),
+            )
+            self.assertEqual(
+                (output_dir / "input_1/00000001.bin").read_bytes(), first.tobytes()
+            )
 
     def test_comparison_rejects_nonfinite_and_large_integer_mismatches(self) -> None:
         """Avoid rounding away integer errors or accepting non-finite values."""
@@ -120,7 +150,10 @@ class FakeAcl(ModuleType):
         for direction, name in (("input", "x"), ("output", "y")):
             getattr(self.mdl, f"get_num_{direction}s").return_value = 1
             getattr(self.mdl, f"get_{direction}_name_by_index").return_value = name
-            getattr(self.mdl, f"get_{direction}_dims").return_value = ({"dims": [1, 2]}, 0)
+            getattr(self.mdl, f"get_{direction}_dims").return_value = (
+                {"dims": [1, 2]},
+                0,
+            )
             getattr(self.mdl, f"get_{direction}_data_type").return_value = 0
             getattr(self.mdl, f"get_{direction}_format").return_value = 2
             getattr(self.mdl, f"get_{direction}_size_by_index").return_value = 8
@@ -137,7 +170,9 @@ class FakeAcl(ModuleType):
         del self.allocations[address]
         return 0
 
-    def copy(self, destination: int, capacity: int, source: int, size: int, kind: int) -> int:
+    def copy(
+        self, destination: int, capacity: int, source: int, size: int, kind: int
+    ) -> int:
         """Copy bytes between mock ACL allocations."""
         if size > capacity:
             return 1
@@ -164,11 +199,15 @@ class InferenceTest(unittest.TestCase):
             for mode in (ACL_HOST, ACL_DEVICE):
                 with self.subTest(mode=mode):
                     acl = FakeAcl(mode)
-                    outputs, times = infer(acl, Path("model.om"), 0, [f"x={path}"], 1, 2)
+                    outputs, times = infer(
+                        acl, Path("model.om"), 0, [f"x={path}"], 1, 2
+                    )
                     np.testing.assert_array_equal(outputs["y"], value)
                     self.assertEqual(len(times), 2)
                     self.assertEqual(acl.mdl.execute.call_count, 3)
-                    self.assertEqual(acl.rt.memcpy.call_count, 2 if mode == ACL_HOST else 0)
+                    self.assertEqual(
+                        acl.rt.memcpy.call_count, 2 if mode == ACL_HOST else 0
+                    )
                     self.assertFalse(acl.allocations)
                     acl.finalize.assert_called_once_with()
 
@@ -195,13 +234,20 @@ class InferenceTest(unittest.TestCase):
             self.assertTrue(encoded)
             image.tofile(path)
             expected = np.full((1, 3, 6, 8), 114 / 255, dtype=np.float32)
-            expected[:, :, 1:5, :] = np.array([1, 0.2, 0], dtype=np.float32).reshape(1, 3, 1, 1)
+            expected[:, :, 1:5, :] = np.array([1, 0.2, 0], dtype=np.float32).reshape(
+                1, 3, 1, 1
+            )
 
             acl = FakeAcl(ACL_HOST)
             for direction in ("input", "output"):
-                getattr(acl.mdl, f"get_{direction}_dims").return_value = ({"dims": list(expected.shape)}, 0)
+                getattr(acl.mdl, f"get_{direction}_dims").return_value = (
+                    {"dims": list(expected.shape)},
+                    0,
+                )
                 getattr(acl.mdl, f"get_{direction}_format").return_value = 0
-                getattr(acl.mdl, f"get_{direction}_size_by_index").return_value = expected.nbytes
+                getattr(
+                    acl.mdl, f"get_{direction}_size_by_index"
+                ).return_value = expected.nbytes
             outputs, _ = infer(acl, Path("model.om"), 0, [f"x={path}"], 0, 1)
             np.testing.assert_array_equal(outputs["y"], expected)
             self.assertFalse(acl.allocations)
@@ -210,12 +256,16 @@ class InferenceTest(unittest.TestCase):
         """Keep integer pixels in NHWC order and reject unusable image inputs."""
         with tempfile.TemporaryDirectory(prefix="atc-test-") as directory:
             path = Path(directory) / "input.jpg"
-            encoded, image = cv2.imencode(".jpg", np.full((2, 4, 3), 80, dtype=np.uint8))
+            encoded, image = cv2.imencode(
+                ".jpg", np.full((2, 4, 3), 80, dtype=np.uint8)
+            )
             self.assertTrue(encoded)
             image.tofile(path)
             spec = Tensor("x", (1, 2, 4, 3), np.dtype("uint8"))
             result = load_inputs([spec], [f"x={path}"])["x"]
-            np.testing.assert_array_equal(result, np.full(spec.shape, 80, dtype=spec.dtype))
+            np.testing.assert_array_equal(
+                result, np.full(spec.shape, 80, dtype=spec.dtype)
+            )
             self.assertTrue(result.flags.c_contiguous)
             ambiguous = Tensor("x", (1, 3, 4, 3), spec.dtype)
             with self.assertRaisesRegex(ValueError, "unambiguous"):

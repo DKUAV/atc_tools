@@ -23,9 +23,18 @@ ACL_MEMCPY_HOST_TO_DEVICE = 1
 ACL_MEMCPY_DEVICE_TO_HOST = 2
 ACL_DENSE_FORMATS = (0, 1, 2)  # NCHW, NHWC, ND.
 ACL_DTYPES = (
-    (0, "float32"), (1, "float16"), (2, "int8"), (3, "int32"), (4, "uint8"),
-    (6, "int16"), (7, "uint16"), (8, "uint32"), (9, "int64"), (10, "uint64"),
-    (11, "float64"), (12, "bool"),
+    (0, "float32"),
+    (1, "float16"),
+    (2, "int8"),
+    (3, "int32"),
+    (4, "uint8"),
+    (6, "int16"),
+    (7, "uint16"),
+    (8, "uint32"),
+    (9, "int64"),
+    (10, "uint64"),
+    (11, "float64"),
+    (12, "bool"),
 )
 
 
@@ -108,13 +117,23 @@ def describe(acl: ModuleType, desc: int, direction: str) -> list[Tensor]:
         layout = getattr(mdl, f"get_{direction}_format")(desc, index)
         size = getattr(mdl, f"get_{direction}_size_by_index")(desc, index)
         if not name or any(tensor.name == name for tensor in tensors):
-            raise ValueError(f"Missing or duplicate {direction} name at index {index}: {name}")
-        if code not in dtypes or layout not in ACL_DENSE_FORMATS or any(dim <= 0 for dim in shape):
-            raise ValueError(f"Unsupported {direction} {name}: shape={shape}, dtype={code}, format={layout}")
+            raise ValueError(
+                f"Missing or duplicate {direction} name at index {index}: {name}"
+            )
+        if (
+            code not in dtypes
+            or layout not in ACL_DENSE_FORMATS
+            or any(dim <= 0 for dim in shape)
+        ):
+            raise ValueError(
+                f"Unsupported {direction} {name}: shape={shape}, dtype={code}, format={layout}"
+            )
         tensor = Tensor(name, shape, np.dtype(dtypes[code]))
         expected = prod(shape) * tensor.dtype.itemsize
         if expected != size:
-            raise ValueError(f"{direction} {name}: dense tensor is {expected} bytes, OM requires {size}")
+            raise ValueError(
+                f"{direction} {name}: dense tensor is {expected} bytes, OM requires {size}"
+            )
         tensors.append(tensor)
     return tensors
 
@@ -144,16 +163,24 @@ def dataset(
         An allocation or an ACL dataset operation failed.
     """
     handle = require_handle(acl.mdl.create_dataset(), "acl.mdl.create_dataset")
-    resources.callback(lambda: check(acl.mdl.destroy_dataset(handle), "acl.mdl.destroy_dataset"))
+    resources.callback(
+        lambda: check(acl.mdl.destroy_dataset(handle), "acl.mdl.destroy_dataset")
+    )
     buffers = []
     for tensor in tensors:
         size = prod(tensor.shape) * tensor.dtype.itemsize
         address, status = acl.rt.malloc(size, ACL_MEM_MALLOC_NORMAL_ONLY)
         check(status, "acl.rt.malloc")
-        resources.callback(lambda address=address: check(acl.rt.free(address), "acl.rt.free"))
-        buffer = require_handle(acl.create_data_buffer(address, size), "acl.create_data_buffer")
         resources.callback(
-            lambda buffer=buffer: check(acl.destroy_data_buffer(buffer), "acl.destroy_data_buffer")
+            lambda address=address: check(acl.rt.free(address), "acl.rt.free")
+        )
+        buffer = require_handle(
+            acl.create_data_buffer(address, size), "acl.create_data_buffer"
+        )
+        resources.callback(
+            lambda buffer=buffer: check(
+                acl.destroy_data_buffer(buffer), "acl.destroy_data_buffer"
+            )
         )
         _, status = acl.mdl.add_dataset_buffer(handle, buffer)
         check(status, "acl.mdl.add_dataset_buffer")
@@ -162,7 +189,12 @@ def dataset(
 
 
 def infer(
-    acl: ModuleType, model: Path, device: int, arguments: list[str], warmup: int, repeat: int
+    acl: ModuleType,
+    model: Path,
+    device: int,
+    arguments: list[str],
+    warmup: int,
+    repeat: int,
 ) -> tuple[dict[str, Array], list[float]]:
     """Execute one OM and return its last outputs and measured execute times in ms.
 
@@ -201,10 +233,14 @@ def infer(
         check(acl.init(), "acl.init")
         resources.callback(lambda: check(acl.finalize(), "acl.finalize"))
         check(acl.rt.set_device(device), "acl.rt.set_device")
-        resources.callback(lambda: check(acl.rt.reset_device(device), "acl.rt.reset_device"))
+        resources.callback(
+            lambda: check(acl.rt.reset_device(device), "acl.rt.reset_device")
+        )
         context, status = acl.rt.create_context(device)
         check(status, "acl.rt.create_context")
-        resources.callback(lambda: check(acl.rt.destroy_context(context), "acl.rt.destroy_context"))
+        resources.callback(
+            lambda: check(acl.rt.destroy_context(context), "acl.rt.destroy_context")
+        )
         mode, status = acl.rt.get_run_mode()
         check(status, "acl.rt.get_run_mode")
         if mode not in (ACL_HOST, ACL_DEVICE):
@@ -214,7 +250,9 @@ def infer(
         check(status, "acl.mdl.load_from_file")
         resources.callback(lambda: check(acl.mdl.unload(model_id), "acl.mdl.unload"))
         desc = require_handle(acl.mdl.create_desc(), "acl.mdl.create_desc")
-        resources.callback(lambda: check(acl.mdl.destroy_desc(desc), "acl.mdl.destroy_desc"))
+        resources.callback(
+            lambda: check(acl.mdl.destroy_desc(desc), "acl.mdl.destroy_desc")
+        )
         check(acl.mdl.get_desc(desc, model_id), "acl.mdl.get_desc")
         input_specs = describe(acl, desc, "input")
         output_specs = describe(acl, desc, "output")
@@ -229,31 +267,51 @@ def infer(
         if mode == ACL_HOST:
             staging, status = acl.rt.malloc_host(capacity)
             check(status, "acl.rt.malloc_host")
-            resources.callback(lambda: check(acl.rt.free_host(staging), "acl.rt.free_host"))
+            resources.callback(
+                lambda: check(acl.rt.free_host(staging), "acl.rt.free_host")
+            )
 
         for spec, (address, size) in zip(input_specs, input_buffers):
             source = inputs[spec.name].ctypes.data
             if mode == ACL_HOST:
                 ctypes.memmove(staging, source, size)
-                check(acl.rt.memcpy(address, size, staging, size, ACL_MEMCPY_HOST_TO_DEVICE), "H2D copy")
+                check(
+                    acl.rt.memcpy(
+                        address, size, staging, size, ACL_MEMCPY_HOST_TO_DEVICE
+                    ),
+                    "H2D copy",
+                )
             else:
                 ctypes.memmove(address, source, size)
 
         for _ in range(warmup):
-            check(acl.mdl.execute(model_id, input_dataset, output_dataset), "acl.mdl.execute")
+            check(
+                acl.mdl.execute(model_id, input_dataset, output_dataset),
+                "acl.mdl.execute",
+            )
         elapsed_ms = []
         for _ in range(repeat):
             start = perf_counter()
-            check(acl.mdl.execute(model_id, input_dataset, output_dataset), "acl.mdl.execute")
+            check(
+                acl.mdl.execute(model_id, input_dataset, output_dataset),
+                "acl.mdl.execute",
+            )
             elapsed_ms.append((perf_counter() - start) * 1000)
 
         outputs: dict[str, Array] = {}
         for spec, (address, size) in zip(output_specs, output_buffers):
             if mode == ACL_HOST:
-                check(acl.rt.memcpy(staging, capacity, address, size, ACL_MEMCPY_DEVICE_TO_HOST), "D2H copy")
+                check(
+                    acl.rt.memcpy(
+                        staging, capacity, address, size, ACL_MEMCPY_DEVICE_TO_HOST
+                    ),
+                    "D2H copy",
+                )
                 address = staging
             contents = ctypes.string_at(address, size)
-            outputs[spec.name] = np.frombuffer(contents, dtype=spec.dtype).reshape(spec.shape)
+            outputs[spec.name] = np.frombuffer(contents, dtype=spec.dtype).reshape(
+                spec.shape
+            )
         return outputs, elapsed_ms
 
 
@@ -263,7 +321,10 @@ def main() -> None:
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument(
-        "--input", required=True, action="append", metavar="NAME=FILE",
+        "--input",
+        required=True,
+        action="append",
+        metavar="NAME=FILE",
         help="Model input file (.npy, .bin, .jpg, .jpeg, or .png), repeatable.",
     )
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -282,7 +343,9 @@ def main() -> None:
         acl = importlib.import_module("acl")
         if not all(hasattr(acl, name) for name in ("init", "rt", "mdl")):
             raise ImportError("The imported acl module is not the vendor pyACL module.")
-        outputs, elapsed_ms = infer(acl, args.model, args.device, args.input, args.warmup, args.repeat)
+        outputs, elapsed_ms = infer(
+            acl, args.model, args.device, args.input, args.warmup, args.repeat
+        )
         save_outputs(args.output_dir, outputs)
         print(
             f"ACL execute ({len(elapsed_ms)} runs): median={median(elapsed_ms):.3f} ms, "

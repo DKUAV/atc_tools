@@ -115,7 +115,9 @@ def load_inputs(tensors: list[Tensor], arguments: list[str]) -> dict[str, Array]
             f"Input names do not match: missing={sorted(expected - paths.keys())}, "
             f"unexpected={sorted(paths.keys() - expected)}"
         )
-    return {tensor.name: _load_input(Path(paths[tensor.name]), tensor) for tensor in tensors}
+    return {
+        tensor.name: _load_input(Path(paths[tensor.name]), tensor) for tensor in tensors
+    }
 
 
 def _load_input(path: Path, tensor: Tensor) -> Array:
@@ -148,14 +150,20 @@ def _load_input(path: Path, tensor: Tensor) -> Array:
         with path.open("rb") as stream:
             data = bytearray(size)
             if stream.readinto(data) != size or stream.read(1):
-                raise ValueError(f"{tensor.name}: expected exactly {size} bytes in {path}")
+                raise ValueError(
+                    f"{tensor.name}: expected exactly {size} bytes in {path}"
+                )
         return np.frombuffer(data, dtype=tensor.dtype).reshape(tensor.shape)
     if suffix not in (".jpg", ".jpeg", ".png"):
-        raise ValueError(f"{tensor.name}: expected a .npy, .bin, .jpg, .jpeg, or .png file: {path}")
+        raise ValueError(
+            f"{tensor.name}: expected a .npy, .bin, .jpg, .jpeg, or .png file: {path}"
+        )
 
     shape = tensor.shape
     if (
-        len(shape) != 4 or shape[0] != 1 or any(dim <= 0 for dim in shape)
+        len(shape) != 4
+        or shape[0] != 1
+        or any(dim <= 0 for dim in shape)
         or (shape[1] == 3) == (shape[3] == 3)
         or (tensor.dtype.kind != "f" and tensor.dtype != np.dtype("uint8"))
     ):
@@ -166,7 +174,9 @@ def _load_input(path: Path, tensor: Tensor) -> Array:
     try:
         from image_input import image_tensor, letterbox, read_image
     except ImportError as error:
-        raise ValueError("JPG/PNG input requires OpenCV. Install opencv-python-headless.") from error
+        raise ValueError(
+            "JPG/PNG input requires OpenCV. Install opencv-python-headless."
+        ) from error
 
     channels_first = shape[1] == 3
     height, width = shape[2:] if channels_first else shape[1:3]
@@ -195,9 +205,16 @@ def save_outputs(directory: Path, outputs: dict[str, Array]) -> None:
         filename = f"output_{index}.npy"
         np.save(directory / filename, array, allow_pickle=False)
         entries.append(
-            {"name": name, "file": filename, "shape": list(array.shape), "dtype": array.dtype.name}
+            {
+                "name": name,
+                "file": filename,
+                "shape": list(array.shape),
+                "dtype": array.dtype.name,
+            }
         )
-    (directory / "outputs.json").write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+    (directory / "outputs.json").write_text(
+        json.dumps(entries, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def read_outputs(directory: Path) -> dict[str, Array]:
@@ -227,10 +244,15 @@ def read_outputs(directory: Path) -> dict[str, Array]:
             raise ValueError(f"Invalid output entry {index} in {directory}")
         name, shape, dtype = entry.get("name"), entry.get("shape"), entry.get("dtype")
         if (
-            not isinstance(name, str) or not name or name in outputs
-            or not isinstance(shape, list) or not all(type(dim) is int and dim >= 0 for dim in shape)
+            not isinstance(name, str)
+            or not name
+            or name in outputs
+            or not isinstance(shape, list)
+            or not all(type(dim) is int and dim >= 0 for dim in shape)
             or not isinstance(dtype, str)
         ):
             raise ValueError(f"Invalid output metadata at index {index} in {directory}")
-        outputs[name] = load_tensor(directory / entry["file"], Tensor(name, tuple(shape), np.dtype(dtype)))
+        outputs[name] = load_tensor(
+            directory / entry["file"], Tensor(name, tuple(shape), np.dtype(dtype))
+        )
     return outputs

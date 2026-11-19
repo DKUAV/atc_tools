@@ -41,7 +41,9 @@ def detections(
         The tensor does not match the chosen layout or contains non-finite values.
     """
     if prediction.ndim != 3 or prediction.shape[0] != 1 or prediction.dtype.kind != "f":
-        raise ValueError(f"Expected one floating-point prediction batch, got {prediction.shape}")
+        raise ValueError(
+            f"Expected one floating-point prediction batch, got {prediction.shape}"
+        )
     rows = prediction[0].astype(np.float32)
     if not np.isfinite(rows).all():
         raise ValueError("Predictions contain non-finite values.")
@@ -60,7 +62,11 @@ def detections(
     if layout == "v5":
         scores = scores * rows[:, 4]
     selected = (scores >= confidence) & (rows[:, 2:4] > 0).all(axis=1)
-    xywh, scores, classes = rows[selected, :4].copy(), scores[selected], classes[selected]
+    xywh, scores, classes = (
+        rows[selected, :4].copy(),
+        scores[selected],
+        classes[selected],
+    )
     xywh[:, :2] -= xywh[:, 2:4] / 2
     keep: list[int] = []
     for label in np.unique(classes):
@@ -79,8 +85,12 @@ def main() -> None:
     """Provide preprocess and postprocess commands for single-image detection."""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    prepare = commands.add_parser("preprocess", help="Write a normalized RGB NCHW tensor")
-    post = commands.add_parser("postprocess", help="Write boxes as JSON and draw an image")
+    prepare = commands.add_parser(
+        "preprocess", help="Write a normalized RGB NCHW tensor"
+    )
+    post = commands.add_parser(
+        "postprocess", help="Write boxes as JSON and draw an image"
+    )
     for command in (prepare, post):
         command.add_argument("--image", required=True, type=Path)
         command.add_argument("--width", required=True, type=int)
@@ -101,7 +111,9 @@ def main() -> None:
         if args.command == "preprocess":
             if args.output.suffix.lower() != ".npy":
                 raise ValueError("The output path must end in .npy.")
-            tensor = image_tensor(canvas, channels_first=True, dtype=np.dtype(args.dtype))
+            tensor = image_tensor(
+                canvas, channels_first=True, dtype=np.dtype(args.dtype)
+            )
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("xb") as stream:
                 np.save(stream, tensor, allow_pickle=False)
@@ -113,7 +125,9 @@ def main() -> None:
         if not isinstance(prediction, np.ndarray):
             prediction.close()
             raise ValueError("Expected a single .npy prediction tensor.")
-        boxes, scores, classes = detections(prediction, args.layout, args.confidence, args.iou)
+        boxes, scores, classes = detections(
+            prediction, args.layout, args.confidence, args.iou
+        )
         boxes[:, [0, 2]] = ((boxes[:, [0, 2]] - left) / scale).clip(0, image.shape[1])
         boxes[:, [1, 3]] = ((boxes[:, [1, 3]] - top) / scale).clip(0, image.shape[0])
         output = []
@@ -121,15 +135,31 @@ def main() -> None:
             x1, y1, x2, y2 = map(float, box)
             if x2 <= x1 or y2 <= y1:
                 continue
-            output.append({"xyxy": [x1, y1, x2, y2], "score": float(score), "class_id": int(label)})
+            output.append(
+                {
+                    "xyxy": [x1, y1, x2, y2],
+                    "score": float(score),
+                    "class_id": int(label),
+                }
+            )
             start, end = (round(x1), round(y1)), (round(x2), round(y2))
             cv2.rectangle(image, start, end, (0, 255, 0), 2)
-            cv2.putText(image, f"{label}: {score:.2f}", start, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.putText(
+                image,
+                f"{label}: {score:.2f}",
+                start,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                1,
+            )
         encoded, preview = cv2.imencode(".jpg", image)
         if not encoded:
             raise ValueError("Could not encode annotated image.")
         args.output_dir.mkdir(parents=True)
-        (args.output_dir / "detections.json").write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
+        (args.output_dir / "detections.json").write_text(
+            json.dumps(output, indent=2) + "\n", encoding="utf-8"
+        )
         preview.tofile(args.output_dir / "annotated.jpg")
     except (OSError, ValueError, cv2.error) as error:
         parser.exit(1, f"YOLO example failed: {error}\n")

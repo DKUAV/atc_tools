@@ -9,10 +9,24 @@ prepare = ["onnx>=1.16", "onnxruntime>=1.16"]
 yolo = ["opencv-python-headless>=4.8"]
 
 [dependency-groups]
-dev = ["ascend-atc-tools[prepare,yolo]", "ty>=0.0.1"]
+dev = [
+    "ascend-atc-tools[prepare,yolo]",
+    "ruff>=0.17.1",
+    "ty>=0.0.89",
+]
 
 [tool.uv]
 package = false
+
+[tool.ruff]
+target-version = "py310"
+src = ["python"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.format]
+quote-style = "double"
 
 [tool.ty.environment]
 extra-paths = ["python"]
