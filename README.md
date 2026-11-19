@@ -79,6 +79,19 @@ bash scripts/run_model.sh --model work/910b-float/model.om --device 0 \
 
 浮点使用 `abs(actual - ref) <= atol + rtol * abs(ref)`，默认 `--atol 0.001 --rtol 0.01` 只用于排查。浮点位宽允许不同，报告会同时显示两侧 dtype。整数和布尔值逐项精确比较。模型输出不匹配或超阈值时退出码非零，已保存的原始输出可独立重比。
 
+### 用 ais_bench 的 Python API 执行 OM
+
+安装昇腾的 OM 推理版 `ais_bench` 和配套 `aclruntime`。离线使用时提前把 wheel 和依赖放进 wheelhouse。按设备上的 CANN、CPU 架构和 Python ABI 选包，例如 ARM64 Python 3.12 环境对应 `cp312`、`linux_aarch64` 的 `aclruntime` wheel。执行前加载该环境的 CANN `set_env.sh`。 [官方安装与 wheel 清单](https://gitee.com/ascend/tools/blob/master/ais-bench_workload/tool/ais_bench/README.md)
+
+```bash
+python3 python/run_om_ais_bench.py --model work/910b-float/model.om --device 0 \
+  --input images=work/input.npy --output-dir work/910b-ais-bench-outputs
+python3 python/compare_outputs.py --reference work/reference \
+  --actual work/910b-ais-bench-outputs
+```
+
+这个入口执行一次固定 shape 推理。多输入可重复传 `--input`，脚本按 OM 的输入顺序传给 `InferSession`。输出沿用 `output_0.npy` 和 `outputs.json` 格式，可以与 CPU 参考结果或 pyACL 的输出目录比较。需要预热、重复推理和吞吐统计时，可使用官方的 `python3 -m ais_bench` 命令。 [官方 Python API](https://gitee.com/ascend/tools/blob/master/ais-bench_workload/tool/ais_bench/API_GUIDE.md)
+
 ## INT8 量化
 
 ### AMCT ONNX 预校准
