@@ -161,6 +161,8 @@ atc_tools onnx quantize --model work/model.onnx \
 
 默认使用全部图片。加 `--batch-num 50` 可只用前 50 张。要设置跳过层、量化算法等参数，可加 `--config work/amct-onnx.cfg`，校准张数由原生配置中的 `batch_num` 指定。这两个参数二选一。省略 `--output-dir` 时，输出目录为模型旁边的 `<模型名>-int8/`。 [AMCT-ONNX 配置字段](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/920beta2/devaids/amct/atlasamct_16_0168.html)
 
+每次校准推理只处理一张图，模型的 batch size 保持为 1。首次量化可以用 `--batch-num 16` 试跑，观察内存用量和验证集精度后再调整张数。进程被杀时先查看系统 OOM 记录和容器或作业的内存上限。 [量化内存排查](docs/deployment-guide.md#amct-onnx-进程被杀)
+
 **从已预处理的张量量化。** 复制量化配置，把 `batch_num` 设为实际使用的校准 batch 数，本例为 `2`。
 
 ```bash

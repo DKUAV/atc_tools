@@ -213,6 +213,16 @@ atc_tools yolo postprocess --image work/test.jpg \
 | OM 描述的字节数、格式不符合输入 | 查看 ATC 的输入形状、格式和 AIPP 等编译选项。runner 需要能按描述还原的连续张量。 |
 | 输出数值超限 | 先用完全相同的输入比较浮点 ONNX 与浮点 OM，再对比量化产物。可分别检查量化模拟和实机输出。 |
 
+### AMCT-ONNX 进程被杀
+
+`--batch-num` 控制读取多少张图。对单输入图片量化，每次推理的 batch size 仍为 1。先用有代表性的 16 张图和新的输出目录复跑。使用 `--config` 时，在配置文件中设 `batch_num: 16`。昇腾文档建议从 16 或 32 个校准样本起步。 [AMCT-ONNX 手工调优](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900/devaids/amct/atlasamct_16_0146.html)
+
+`amct-onnx.log` 记录 AMCT 的输出。若最后一行是保存 `modified_model.onnx`，这可能是校准前保存的中间模型。若收到 `SIGKILL`，在故障时段查看宿主机内核日志，并核对容器或调度作业的内存上限。cgroup v2 的 `memory.max` 表示所在 cgroup 的上限，父 cgroup 也可能设有更低上限。 [Linux cgroup v2 内存控制](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory)
+
+```bash
+journalctl -k -b --no-pager | grep -Ei 'oom-kill|out of memory|killed process' | tail -15
+```
+
 ## 本地开发检查
 
 ```bash

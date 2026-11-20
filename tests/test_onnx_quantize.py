@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import signal
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from subprocess import STDOUT
+from subprocess import STDOUT, CalledProcessError
 from typing import BinaryIO
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ import onnx
 from onnx import TensorProto, helper
 
 from atc_tools.cli import main
+from atc_tools.model.quantize import quantize_images
 from atc_tools.model.tensor_io import Tensor, load_inputs
 
 
@@ -142,3 +144,27 @@ class ImageQuantizationTest(unittest.TestCase):
                         (output / "amct-onnx.log").read_bytes(), b"Calibrated\n"
                     )
                     self.assertEqual(list(output.glob("calibration-*")), [])
+                    self.assertIn("model batch size 1", report.getvalue())
+                    if not use_config:
+                        self.assertIn(f"{count} calibration steps", report.getvalue())
+
+            for selected_config, expected_hint in (
+                (None, "--batch-num"),
+                (config, "batch_num in the AMCT config"),
+            ):
+                output = root / f"killed-{selected_config is not None}"
+                with (
+                    self.subTest(config=selected_config),
+                    patch.object(signal, "SIGKILL", 9, create=True),
+                    patch("shutil.which", return_value=sys.executable),
+                    patch(
+                        "subprocess.run",
+                        side_effect=CalledProcessError(-9, "amct_onnx"),
+                    ),
+                    redirect_stdout(StringIO()),
+                    self.assertRaisesRegex(RuntimeError, "SIGKILL") as caught,
+                ):
+                    quantize_images(model, dataset, output, config=selected_config)
+                self.assertIn(expected_hint, str(caught.exception))
+                self.assertIn(str(output / "amct-onnx.log"), str(caught.exception))
+                self.assertEqual(list(output.glob("calibration-*")), [])

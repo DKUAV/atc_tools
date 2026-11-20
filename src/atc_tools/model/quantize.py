@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -98,10 +99,12 @@ def quantize_images(
     log = output_dir / "amct-onnx.log"
     if config is None:
         settings = ["--batch_num", str(len(images))]
+        steps = f"{len(images)} calibration steps"
     else:
         saved_config = output_dir / "amct-onnx.cfg"
         shutil.copyfile(config, saved_config)
         settings = ["--calibration_config", str(saved_config)]
+        steps = "the number of calibration steps in the AMCT config"
 
     print(f"Preparing {len(images)} calibration images.", flush=True)
     with TemporaryDirectory(prefix="calibration-", dir=output_dir) as directory:
@@ -125,7 +128,11 @@ def quantize_images(
             str(prefix),
             *settings,
         ]
-        print(f"Running AMCT-ONNX. Log: {log}", flush=True)
+        print(
+            f"Running AMCT-ONNX with model batch size {tensor.shape[0]} for {steps}. "
+            f"Log: {log}",
+            flush=True,
+        )
         try:
             with log.open("wb") as stream:
                 subprocess.run(
@@ -136,6 +143,16 @@ def quantize_images(
                     check=True,
                 )
         except subprocess.CalledProcessError as error:
+            if error.returncode == -getattr(signal, "SIGKILL", 0):
+                batch_hint = (
+                    "Reduce batch_num in the AMCT config for a smaller calibration run."
+                    if config is not None
+                    else "Use a smaller --batch-num for a calibration test run."
+                )
+                raise RuntimeError(
+                    "AMCT-ONNX was killed by SIGKILL. Check the kernel OOM log and "
+                    f"the container or job memory limit. {batch_hint} See {log}."
+                ) from error
             raise RuntimeError(
                 f"AMCT-ONNX exited with status {error.returncode}. See {log}."
             ) from error
