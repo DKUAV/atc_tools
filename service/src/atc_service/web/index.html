@@ -10,15 +10,24 @@
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="/" aria-label="ATC Tools 首页"><span class="brand-mark" aria-hidden="true">A</span>ATC Tools</a>
+      <a class="brand" href="/" aria-label="ATC Tools 首页"><span class="brand-mark" aria-hidden="true"></span>ATC Tools</a>
       <div id="account" class="account" hidden>
-        <span id="account-name"></span><button id="logout" class="quiet" type="button">退出登录</button>
+        <span id="account-name" class="account-name"></span><button id="logout" class="quiet" type="button">退出登录</button>
       </div>
     </div>
   </header>
   <main>
     <p id="notice" class="notice" role="status" hidden></p>
+    <p id="connection" class="notice connection" role="status" hidden>连接已断开。当前配置和已加载的任务信息仍保留在此页面。</p>
+    <section id="session-loading" class="startup" aria-busy="true" aria-label="正在加载工作台">
+      <div class="panel startup-card" aria-hidden="true">
+        <span class="skeleton skeleton-title"></span>
+        <span class="skeleton skeleton-line"></span>
+        <span class="skeleton skeleton-block"></span>
+      </div>
+    </section>
     <section id="sign-in" class="panel login" hidden aria-labelledby="login-title">
+      <span class="brand-mark login-mark" aria-hidden="true"></span>
       <h1 id="login-title">登录工作台</h1>
       <p>使用实验室管理员分配的账号。</p>
       <form id="login-form" method="post">
@@ -29,23 +38,32 @@
     </section>
     <div id="workbench" hidden>
       <div class="page-head">
-        <div><h1>模型转换工作台</h1><p>上传 ONNX，选择编译预设并查看结果。</p></div>
-        <button type="button" id="new-model" class="secondary">新建转换</button>
+        <div class="page-title"><h1>模型转换工作台</h1><p>上传 ONNX，配置并执行模型转换。</p></div>
+        <button type="button" id="new-model" class="secondary new-button"><span aria-hidden="true">+</span>新建转换</button>
       </div>
       <div class="work-grid">
         <section class="panel configuration" aria-labelledby="configuration-title">
-          <h2 id="configuration-title">转换配置</h2>
+          <div class="panel-heading">
+            <span class="section-icon model-icon" aria-hidden="true"></span>
+            <h2 id="configuration-title">转换配置</h2>
+          </div>
           <form id="compile-form">
-            <label for="model">ONNX 模型</label>
-            <input id="model" class="file" type="file" accept=".onnx" aria-describedby="file-help">
-            <p id="file-help" class="help">支持内嵌权重的 .onnx 文件</p>
+            <div class="upload-area">
+              <label for="model">ONNX 模型</label>
+              <input id="model" class="file" type="file" accept=".onnx" aria-describedby="file-help">
+              <p id="file-help" class="help">支持内嵌权重的 .onnx 文件</p>
+            </div>
             <p id="model-name" class="model-name" hidden></p>
+            <div id="model-loading" class="loading-inset" role="status" hidden>
+              <span class="skeleton skeleton-line" aria-hidden="true"></span>
+              <span>正在读取模型输入…</span>
+            </div>
             <ul id="model-inputs" class="model-inputs" aria-label="模型输入" hidden></ul>
             <div class="fields">
               <label>目标设备<select id="target" disabled></select></label>
               <label>编译预设<select id="preset" disabled></select></label>
             </div>
-            <p id="capability-note" class="help" hidden></p>
+            <p id="capability-note" class="mode-note" hidden><strong>模拟模式</strong><span>输入数据会实际处理，编译和 NPU 产物为模拟结果。</span></p>
             <fieldset id="shapes" class="options" hidden>
               <legend>模型输入尺寸</legend>
               <div id="shape-inputs" class="input-options"></div>
@@ -80,23 +98,36 @@
           </form>
         </section>
         <section class="panel execution" aria-labelledby="execution-title">
-          <h2 id="execution-title">执行计划</h2>
+          <div class="panel-heading">
+            <span class="section-icon execution-icon" aria-hidden="true"></span>
+            <h2 id="execution-title">执行计划</h2>
+          </div>
           <ol id="stages" class="stages">
-            <li><span id="inspect-icon" class="stage-icon" aria-hidden="true"></span><span>上传并检查 ONNX</span><span id="inspect-state" class="stage-state" aria-live="polite">未开始</span></li>
-            <li><span id="compile-icon" class="stage-icon" aria-hidden="true"></span><span>编译模型</span><span id="compile-state" class="stage-state" aria-live="polite">未开始</span></li>
+            <li><span id="inspect-icon" class="stage-icon" aria-hidden="true"></span><span class="stage-title">上传并检查 ONNX</span><span id="inspect-state" class="status-pill" aria-live="polite">未开始</span></li>
+            <li><span id="compile-icon" class="stage-icon" aria-hidden="true"></span><span class="stage-title">编译模型</span><span id="compile-state" class="status-pill" aria-live="polite">未开始</span></li>
           </ol>
           <div id="task-detail" class="task-detail" hidden>
             <div class="section-head"><h3 id="task-title">任务详情</h3><button id="cancel" class="quiet" type="button" hidden>取消任务</button></div>
             <p id="task-message" class="help" aria-live="polite" hidden></p>
             <div id="results" hidden><h3>输出文件</h3><ul id="downloads" class="downloads"></ul></div>
-            <h3>执行日志</h3>
-            <pre id="logs" tabindex="0" aria-label="执行日志">等待日志…</pre>
+            <div class="log-card">
+              <h3>执行日志</h3>
+              <pre id="logs" tabindex="0" aria-label="执行日志">等待日志…</pre>
+            </div>
           </div>
         </section>
       </div>
       <section class="panel history" aria-labelledby="history-title">
-        <div class="section-head"><h2 id="history-title">我的任务</h2><button type="button" id="refresh" class="quiet">刷新</button></div>
-        <p id="empty-history" class="help">暂无任务</p>
+        <div class="section-head">
+          <div class="panel-heading"><span class="section-icon history-icon" aria-hidden="true"></span><h2 id="history-title">我的任务</h2></div>
+          <button type="button" id="refresh" class="quiet">刷新</button>
+        </div>
+        <div id="history-loading" class="history-loading" role="status" hidden>
+          <span class="sr-only">正在加载任务…</span>
+          <div class="skeleton-row" aria-hidden="true"><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-pill"></span></div>
+          <div class="skeleton-row" aria-hidden="true"><span class="skeleton skeleton-line"></span><span class="skeleton skeleton-pill"></span></div>
+        </div>
+        <p id="empty-history" class="empty-history help" hidden>暂无任务</p>
         <ul id="history" class="history-list"></ul>
       </section>
     </div>

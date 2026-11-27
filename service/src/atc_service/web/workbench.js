@@ -2,6 +2,7 @@ import { inputSettings, mountDataset, renderInputSettings } from "./datasets.js"
 
 const $ = (id) => document.getElementById(id);
 const apiRoot = "/web/api";
+const connectionError = "无法连接服务，请检查网络后重试。";
 const stateText = {
   idle: "未开始", uploading: "上传中", queued: "排队中", running: "进行中",
   succeeded: "已完成", failed: "失败", cancelled: "已取消", pending: "未开始", skipped: "已跳过",
@@ -32,7 +33,13 @@ async function api(path, options = {}) {
   const activeSession = session;
   const headers = new Headers(options.headers);
   if (activeSession && options.method === "POST") headers.set("X-ATC-CSRF", activeSession.csrf);
-  const response = await fetch(apiRoot + path, { ...options, headers, cache: "no-store" });
+  let response;
+  try {
+    response = await fetch(apiRoot + path, { ...options, headers, cache: "no-store" });
+  } catch (error) {
+    if (error instanceof TypeError) throw new Error(connectionError, { cause: error });
+    throw error;
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     if (response.status === 401 && path !== "/login" && activeSession && session === activeSession) {
@@ -47,8 +54,9 @@ async function api(path, options = {}) {
 function showStage(stage, status) {
   const icon = $(`${stage}-icon`);
   icon.className = `stage-icon ${status === "uploading" ? "running" : status}`;
-  icon.textContent = { succeeded: "✓", failed: "!", cancelled: "×" }[status] || "";
+  icon.textContent = { queued: "·", succeeded: "✓", failed: "!", cancelled: "×" }[status] || "";
   const label = $(`${stage}-state`);
+  label.dataset.state = status;
   if (label.textContent !== stateText[status]) label.textContent = stateText[status];
 }
 
@@ -82,10 +90,11 @@ function renderStages(stages) {
       icon.id = `${stage}-icon`;
       icon.setAttribute("aria-hidden", "true");
       const title = document.createElement("span");
+      title.className = "stage-title";
       title.textContent = stageText[stage];
       const state = document.createElement("span");
       state.id = `${stage}-state`;
-      state.className = "stage-state";
+      state.className = "status-pill";
       state.setAttribute("aria-live", "polite");
       row.append(icon, title, state);
       list.append(row);
@@ -114,13 +123,14 @@ function changed() {
 function refreshStart() {
   const options = choices();
   const inputs = model?.inputs || [];
-  $("model").disabled = busy;
+  const offline = !navigator.onLine;
+  $("model").disabled = busy || offline;
   $("new-model").disabled = busy;
   $("target").disabled = busy || !$("target").options.length;
   $("preset").disabled = busy || !$("preset").options.length;
   for (const field of $("compile-form").querySelectorAll("fieldset")) field.disabled = busy;
   $("capability-note").hidden = !options.preset?.simulated;
-  $("capability-note").textContent = "当前为模拟模式。会处理输入数据，编译和 NPU 结果为模拟产物。";
+  $("model-loading").hidden = !model || model.ready || model.failed;
   $("checks").hidden = !options.preset?.checks;
   dataset.calibration.show(options.calibration, inputs);
   dataset.validation.show(options.validation, inputs);
@@ -130,7 +140,8 @@ function refreshStart() {
   $("raw-bin").hidden = !(options.calibration && dataset.calibration.hasBinary() || options.validation && dataset.validation.hasBinary());
   if (!viewing || viewing.reuseInspection || viewing.inspection) renderStages(currentPlan(options));
   let hint = "";
-  if (busy && model?.ready) hint = "正在上传数据并提交任务…";
+  if (offline) hint = "网络恢复后可提交任务。";
+  else if (busy && model?.ready) hint = "正在上传数据并提交任务…";
   else if (model?.submitted) hint = "已提交。可新建转换以使用另一份模型。";
   else if (!model) hint = "请选择本地 ONNX 文件。";
   else if (model.failed) hint = "模型检查失败，请更换文件后再试。";
@@ -180,6 +191,10 @@ function signInView(notice = "") {
   busy = false;
   resetForm();
   $("history").replaceChildren();
+  $("history-loading").hidden = true;
+  $("empty-history").hidden = true;
+  $("refresh").disabled = false;
+  $("session-loading").hidden = true;
   $("account").hidden = true;
   $("workbench").hidden = true;
   $("sign-in").hidden = false;
@@ -197,6 +212,7 @@ function loadPresets() {
 
 async function enter(info) {
   session = info;
+  $("session-loading").hidden = true;
   $("account-name").textContent = info.username;
   $("account").hidden = false;
   $("workbench").hidden = false;
@@ -210,21 +226,41 @@ async function enter(info) {
 
 async function loadHistory() {
   const activeSession = session;
-  const tasks = await api("/tasks");
-  if (session !== activeSession) return;
+  $("refresh").disabled = true;
+  if (!$("history").children.length) {
+    $("history-loading").hidden = false;
+    $("empty-history").hidden = true;
+  }
+  let tasks;
+  try {
+    tasks = await api("/tasks");
+    if (session !== activeSession) return;
+  } finally {
+    if (session === activeSession) {
+      $("history-loading").hidden = true;
+      $("refresh").disabled = false;
+    }
+  }
   $("empty-history").hidden = tasks.length > 0;
   const items = tasks.map((task) => {
     const row = document.createElement("li");
     const button = document.createElement("button");
+    const info = document.createElement("span");
     const name = document.createElement("span");
     const summary = document.createElement("span");
+    const status = document.createElement("span");
     button.type = "button";
     name.textContent = task.filename;
-    summary.className = "help";
+    name.className = "history-name";
+    summary.className = "help history-caption";
+    status.className = "status-pill";
+    status.dataset.state = task.state;
     const [target, precision] = (task.preset || "").split("-");
     const description = precisionText[precision] ? `${target.toUpperCase()} · ${precisionText[precision]}` : presetText[task.preset] || operationText[task.operation];
-    summary.textContent = `${description} · ${stateText[task.state]}`;
-    button.append(name, summary);
+    summary.textContent = description;
+    status.textContent = stateText[task.state];
+    info.append(name, summary);
+    button.append(info, status);
     row.append(button);
     button.addEventListener("click", () => {
       if (busy) return;
@@ -388,6 +424,16 @@ $("new-model").addEventListener("click", () => {
   $("model").focus();
 });
 $("refresh").addEventListener("click", () => loadHistory().catch((error) => message(error.message)));
+
+function showConnection() {
+  $("connection").hidden = navigator.onLine;
+  if (navigator.onLine && $("notice").textContent === connectionError) message("");
+  refreshStart();
+}
+
+window.addEventListener("online", showConnection);
+window.addEventListener("offline", showConnection);
+showConnection();
 
 $("model").addEventListener("change", async (event) => {
   const file = event.currentTarget.files[0];
