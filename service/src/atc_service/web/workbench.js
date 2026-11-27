@@ -1,8 +1,11 @@
 import { inputSettings, mountDataset, renderInputSettings } from "./datasets.js";
+import { bindDrop, droppedFiles, pickedFiles, preventFileNavigation } from "./uploads.js";
 
 const $ = (id) => document.getElementById(id);
 const apiRoot = "/web/api";
 const connectionError = "无法连接服务，请检查网络后重试。";
+const modelUpload = $("model-upload");
+const modelPicker = $("model");
 const stateText = {
   idle: "未开始", uploading: "上传中", queued: "排队中", running: "进行中",
   succeeded: "已完成", failed: "失败", cancelled: "已取消", pending: "未开始", skipped: "已跳过",
@@ -124,7 +127,8 @@ function refreshStart() {
   const options = choices();
   const inputs = model?.inputs || [];
   const offline = !navigator.onLine;
-  $("model").disabled = busy || offline;
+  modelUpload.disabled = !session || busy || offline;
+  modelPicker.disabled = modelUpload.disabled;
   $("new-model").disabled = busy;
   $("target").disabled = busy || !$("target").options.length;
   $("preset").disabled = busy || !$("preset").options.length;
@@ -160,11 +164,11 @@ function stopWatching() {
   viewing = undefined;
 }
 
-function resetForm(clearFile = true) {
+function resetForm() {
   stopWatching();
   model = undefined;
   attemptKey = undefined;
-  if (clearFile) $("model").value = "";
+  modelPicker.value = "";
   $("model-inputs").replaceChildren();
   $("model-inputs").hidden = true;
   $("model-name").hidden = true;
@@ -219,7 +223,7 @@ async function enter(info) {
   $("sign-in").hidden = true;
   const targets = new Set(info.workflow_presets.map((preset) => preset.target));
   $("target").replaceChildren(...Array.from(targets, (target) => new Option(target, target)));
-  $("file-help").textContent = `支持内嵌权重的 .onnx 文件，大小上限 ${Math.floor(info.max_upload_bytes / 1048576)} MiB。`;
+  $("file-help").textContent = `点击选择或拖入内嵌权重的 .onnx 文件，大小上限 ${Math.floor(info.max_upload_bytes / 1048576)} MiB。`;
   loadPresets();
   await loadHistory();
 }
@@ -421,7 +425,7 @@ $("compile-form").addEventListener("input", (event) => {
 $("new-model").addEventListener("click", () => {
   resetForm();
   message("");
-  $("model").focus();
+  modelUpload.focus();
 });
 $("refresh").addEventListener("click", () => loadHistory().catch((error) => message(error.message)));
 
@@ -435,19 +439,20 @@ window.addEventListener("online", showConnection);
 window.addEventListener("offline", showConnection);
 showConnection();
 
-$("model").addEventListener("change", async (event) => {
-  const file = event.currentTarget.files[0];
-  if (!file) return;
+async function uploadModel(files) {
+  if (modelUpload.disabled) return;
   const activeSession = session;
-  resetForm(false);
-  message("");
-  if (!file.name.toLowerCase().endsWith(".onnx") || !file.size || file.size > session.max_upload_bytes) {
-    $("model").value = "";
-    message("请选择大小在限制内的非空 .onnx 文件。");
+  const file = files.length === 1 ? files[0].file : null;
+  if (!file?.name.toLowerCase().endsWith(".onnx") || !file.size || file.size > activeSession.max_upload_bytes) {
+    message("请添加一个大小在限制内的非空 .onnx 文件。");
     return;
   }
+  resetForm();
+  message("");
   busy = true;
   model = { filename: file.name };
+  $("model-name").textContent = file.name;
+  $("model-name").hidden = false;
   showStage("inspect", "uploading");
   refreshStart();
   try {
@@ -461,7 +466,6 @@ $("model").addEventListener("change", async (event) => {
   } catch (error) {
     if (session !== activeSession) return;
     model.failed = true;
-    $("model").value = "";
     showStage("inspect", "failed");
     message(error.message);
   } finally {
@@ -470,7 +474,24 @@ $("model").addEventListener("change", async (event) => {
       refreshStart();
     }
   }
+}
+
+modelUpload.addEventListener("click", () => modelPicker.click());
+modelPicker.addEventListener("change", () => {
+  const files = pickedFiles(modelPicker.files);
+  modelPicker.value = "";
+  if (files.length) void uploadModel(files);
 });
+bindDrop(modelUpload, async (transfer) => {
+  const activeSession = session;
+  try {
+    const files = await droppedFiles(transfer, false);
+    if (session === activeSession) await uploadModel(files);
+  } catch (error) {
+    if (session === activeSession) message(error.message);
+  }
+});
+preventFileNavigation();
 
 $("compile-form").addEventListener("submit", async (event) => {
   event.preventDefault();

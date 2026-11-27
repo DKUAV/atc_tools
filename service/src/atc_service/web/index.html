@@ -48,12 +48,12 @@
             <h2 id="configuration-title">转换配置</h2>
           </div>
           <form id="compile-form">
-            <div class="upload-area">
-              <label for="model">ONNX 模型</label>
-              <input id="model" class="file" type="file" accept=".onnx" aria-describedby="file-help">
-              <p id="file-help" class="help">支持内嵌权重的 .onnx 文件</p>
-            </div>
-            <p id="model-name" class="model-name" hidden></p>
+            <button id="model-upload" class="upload-zone" type="button" aria-label="ONNX 模型" aria-describedby="file-help">
+              <span class="upload-plus" aria-hidden="true">+</span>
+              <span><strong class="upload-title">ONNX 模型</strong><span id="file-help" class="upload-help">点击选择或拖入内嵌权重的 .onnx 文件</span></span>
+            </button>
+            <input id="model" type="file" accept=".onnx" hidden>
+            <p id="model-name" class="model-name" aria-live="polite" hidden></p>
             <div id="model-loading" class="loading-inset" role="status" hidden>
               <span class="skeleton skeleton-line" aria-hidden="true"></span>
               <span>正在读取模型输入…</span>
@@ -133,15 +133,15 @@
     </div>
   </main>
   <template id="dataset-picker">
-    <fieldset class="options">
-      <legend></legend>
-      <details>
-        <summary>添加数据</summary>
-        <div class="picker-actions"><button type="button" class="secondary" data-picker="files">选择文件</button><button type="button" class="secondary" data-picker="folder">选择文件夹</button></div>
-      </details>
+    <fieldset class="dataset-uploader">
+      <button class="upload-zone" type="button" aria-expanded="false">
+        <span class="upload-plus" aria-hidden="true">+</span>
+        <span><strong class="upload-title" data-upload-title></strong><span class="upload-help" data-upload-help>点击选择或拖入图片、.npy、.bin 文件或文件夹</span></span>
+      </button>
+      <div class="picker-actions" hidden><button type="button" class="quiet" data-picker="files">选择文件</button><button type="button" class="quiet" data-picker="folder">选择文件夹</button></div>
       <input data-mode="files" type="file" accept=".jpg,.jpeg,.png,.npy,.bin" multiple hidden>
       <input data-mode="folder" type="file" webkitdirectory multiple hidden>
-      <p class="help" data-count aria-live="polite">支持 JPG、PNG、.npy 和 .bin</p>
+      <p class="help" data-count aria-live="polite" hidden></p>
       <p class="help" data-mapping hidden></p>
     </fieldset>
   </template>

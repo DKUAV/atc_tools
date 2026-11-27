@@ -83,13 +83,18 @@ form { display: grid; gap: 1rem; margin-top: 1.3rem; }
 label { display: grid; gap: .4rem; font-size: .9rem; font-weight: 650; }
 input, select { width: 100%; min-width: 0; padding: .65rem .78rem; border: 1px solid var(--control-line); border-radius: .55rem; background: var(--surface); color: var(--ink); font-weight: 450; }
 select { appearance: none; padding-right: 2.25rem; background-image: linear-gradient(45deg, transparent 50%, var(--ocean-ink) 50%), linear-gradient(135deg, var(--ocean-ink) 50%, transparent 50%); background-position: calc(100% - 17px) 52%, calc(100% - 12px) 52%; background-size: 5px 5px; background-repeat: no-repeat; }
-.upload-area { display: grid; gap: .5rem; padding: .85rem; border: 1px dashed #b99771; border-radius: .82rem; background: #fffbf4; }
-.file { padding: .25rem 0; border: 0; border-radius: .38rem; background: transparent; color: var(--muted); font-size: .875rem; }
-.file::file-selector-button { margin-inline-end: .75rem; padding: .46rem .8rem; border: 1px solid #d3b192; border-radius: .48rem; background: var(--sand-tint); color: #543b24; font: inherit; font-weight: 650; cursor: pointer; }
-.file:not(:disabled)::file-selector-button:hover { background: #f3dfc8; }
 button { padding: .63rem 1rem; border: 1px solid transparent; border-radius: .58rem; cursor: pointer; font-size: .9rem; font-weight: 700; }
 button:disabled, select:disabled, input:disabled { cursor: default; opacity: .7; }
 :where(button, input, select, a, pre, summary):focus-visible { outline: 3px solid var(--ocean); outline-offset: 3px; }
+.upload-zone { display: grid; grid-template-columns: 2.55rem minmax(0, 1fr); align-items: center; gap: .85rem; width: 100%; min-height: 5rem; padding: .85rem; border: 1px dashed #b99771; border-radius: .82rem; background: #fffbf4; color: var(--ink); text-align: start; }
+.upload-zone > span { pointer-events: none; }
+.upload-zone:hover:not(:disabled), .upload-zone[aria-expanded="true"] { border-color: var(--sand-deep); background: var(--sand-tint); }
+.upload-zone.drag-over:not(:disabled) { border-style: solid; border-color: var(--ocean); background: var(--ocean-tint); outline: 2px solid var(--ocean); outline-offset: 2px; }
+.upload-plus { display: grid; place-items: center; width: 2.55rem; height: 2.55rem; border-radius: .62rem; background: #f2dfc9; color: #583b22; font-size: 1.52rem; font-weight: 450; line-height: 1; }
+.upload-zone.drag-over .upload-plus { background: #caeaf0; color: var(--ocean-ink); }
+.upload-title, .upload-help { display: block; overflow-wrap: anywhere; }
+.upload-title { font-weight: 750; }
+.upload-help { margin-top: .16rem; color: var(--muted); font-size: .875rem; font-weight: 450; }
 .primary { color: #2e2115; background: var(--sand); border-color: var(--sand); }
 .primary:hover:not(:disabled) { background: var(--sand-deep); border-color: var(--sand-deep); }
 .primary:disabled { color: #655e52; background: #f1e9dd; border-color: #e7dfd1; }
@@ -102,7 +107,9 @@ button:disabled, select:disabled, input:disabled { cursor: default; opacity: .7;
 .options { min-width: 0; margin: 0; padding: .8rem; display: grid; gap: .65rem; border: 1px solid var(--line); border-radius: .7rem; background: #fffdfa; }
 .options legend { padding-inline: .32rem; font-size: .9rem; font-weight: 700; }
 .options summary { width: fit-content; color: var(--ocean-ink); cursor: pointer; font-size: .9rem; font-weight: 650; }
-.picker-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .55rem; }
+.dataset-uploader { display: grid; gap: .45rem; min-width: 0; margin: 0; padding: 0; border: 0; }
+.picker-actions { display: flex; flex-wrap: wrap; gap: .25rem; padding: .25rem .5rem; border: 1px solid var(--line); border-radius: .58rem; background: var(--surface); }
+.selection-error { color: var(--error-ink); }
 .check { display: flex; align-items: center; gap: .6rem; }
 .check input { width: 1rem; height: 1rem; margin: 0; accent-color: var(--ocean-ink); }
 .input-options { display: grid; gap: .6rem; min-width: 0; overflow-wrap: anywhere; }

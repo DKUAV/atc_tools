@@ -1,3 +1,5 @@
+import { bindDrop, droppedFiles, pickedFiles } from "./uploads.js";
+
 const $ = (id) => document.getElementById(id);
 const supported = /\.(jpe?g|png|npy|bin)$/i;
 const modelDtypes = { FLOAT: "float32", FLOAT16: "float16", DOUBLE: "float64" };
@@ -22,48 +24,108 @@ function numbers(value, integer = false) {
 
 export function mountDataset(container, title, changed) {
   container.append($("dataset-picker").content.cloneNode(true));
-  container.querySelector("legend").textContent = title;
+  const zone = container.querySelector(".upload-zone");
+  const help = container.querySelector("[data-upload-help]");
+  const actions = container.querySelector(".picker-actions");
   const count = container.querySelector("[data-count]");
-  const details = container.querySelector("details");
   const guidance = container.querySelector("[data-mapping]");
+  container.querySelector("[data-upload-title]").textContent = title;
+  zone.setAttribute("aria-label", title);
+  actions.id = `${container.id}-actions`;
+  help.id = `${container.id}-help`;
+  zone.setAttribute("aria-controls", actions.id);
+  zone.setAttribute("aria-describedby", help.id);
   let files = [];
+  let reading = false;
+  let selection = 0;
+
+  function showActions(open) {
+    actions.hidden = !open;
+    zone.setAttribute("aria-expanded", String(open));
+  }
+
+  function showCount(text, error = false) {
+    count.hidden = !text;
+    count.textContent = text;
+    count.classList.toggle("selection-error", error);
+  }
+
+  function selectFiles(picked) {
+    reading = false;
+    files = picked.filter(({ file }) => supported.test(file.name));
+    const skipped = picked.length - files.length;
+    showCount(files.length ? `已添加 ${files.length} 个文件${skipped ? `，跳过 ${skipped} 个不支持的文件` : ""}。` : "没有可用的图片、.npy 或 .bin 文件。", !files.length);
+    changed();
+  }
+
+  zone.addEventListener("click", () => showActions(actions.hidden));
+  container.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !actions.hidden) {
+      showActions(false);
+      zone.focus();
+    }
+  });
   for (const input of container.querySelectorAll("input")) {
-    container.querySelector(`[data-picker=${input.dataset.mode}]`).addEventListener("click", () => input.click());
+    container.querySelector(`[data-picker=${input.dataset.mode}]`).addEventListener("click", () => {
+      showActions(false);
+      zone.focus({ preventScroll: true });
+      input.click();
+    });
     input.addEventListener("change", () => {
-      const picked = Array.from(input.files);
-      files = picked.filter((file) => supported.test(file.name));
-      count.textContent = `已选择 ${files.length} 个文件，跳过 ${picked.length - files.length} 个不支持的文件。`;
-      details.open = false;
+      const picked = pickedFiles(input.files);
       input.value = "";
-      changed();
+      if (!picked.length) return;
+      selection++;
+      selectFiles(picked);
     });
   }
+  bindDrop(zone, async (transfer) => {
+    const current = ++selection;
+    reading = true;
+    showActions(false);
+    showCount("正在读取所拖入的文件…");
+    changed();
+    try {
+      const picked = await droppedFiles(transfer);
+      if (current === selection) selectFiles(picked);
+    } catch {
+      if (current !== selection) return;
+      reading = false;
+      showCount(files.length ? `读取失败，仍保留先前添加的 ${files.length} 个文件。` : "无法读取拖入的文件，请重试。", true);
+      changed();
+    }
+  });
   return {
     clear() {
+      selection++;
+      reading = false;
       files = [];
-      count.textContent = "支持 JPG、PNG、.npy 和 .bin";
+      showCount("");
+      showActions(false);
     },
     show(visible, inputs) {
       container.hidden = !visible;
+      if (!visible) showActions(false);
       guidance.hidden = inputs.length < 2;
       guidance.textContent = inputs.length > 1
         ? `按输入分目录 input_0、input_1 等，同一样本的文件名主体相同。多选文件时用 sample.input_0.npy 这类命名。${inputs.map(({ name }, index) => `input_${index} = ${name}`).join("，")}`
         : "";
     },
-    hasBinary() { return files.some((file) => /\.bin$/i.test(file.name)); },
+    hasBinary() { return files.some(({ file }) => /\.bin$/i.test(file.name)); },
     samples(inputCount, limit) {
-      if (!files.length) throw new Error(`请选择${title}。`);
+      if (reading) throw new Error(`正在读取${title}。`);
+      if (!files.length) throw new Error(`请添加${title}。`);
       if (!inputCount || inputCount > 16) throw new Error("数据集工作流支持 1 到 16 个模型输入。");
-      if (files.some((file) => !file.size || file.size > limit || file.name.length > 200)) {
+      if (files.some(({ file }) => !file.size || file.size > limit || file.name.length > 200)) {
         throw new Error(`${title}包含空文件、超出大小限制的文件或过长文件名。`);
       }
       if (files.length > inputCount * 128) throw new Error(`${title}最多支持 128 个样本。`);
-      const sorted = [...files].sort((a, b) => (a.webkitRelativePath || a.name).localeCompare(b.webkitRelativePath || b.name));
-      if (inputCount === 1) return sorted.map((file) => [file]);
+      const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
+      if (inputCount === 1) return sorted.map(({ file }) => [file]);
       const groups = new Map();
-      for (const file of sorted) {
+      for (const { file, path: relativePath } of sorted) {
         const basename = file.name.replace(supported, "");
-        const path = file.webkitRelativePath.split("/");
+        const path = relativePath.split("/");
         const directory = /^input_(\d+)$/.exec(path.at(-2) || "");
         const suffix = /^(.*)\.input_(\d+)$/.exec(basename);
         const index = directory ? Number(directory[1]) : Number(suffix?.[2]);
