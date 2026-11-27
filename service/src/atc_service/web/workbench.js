@@ -427,6 +427,12 @@ $("new-model").addEventListener("click", () => {
   message("");
   modelUpload.focus();
 });
+$("compass").addEventListener("click", (event) => {
+  const compass = event.currentTarget;
+  const open = compass.getAttribute("aria-expanded") === "true";
+  compass.setAttribute("aria-expanded", String(!open));
+  $("compass-note").textContent = open ? "" : "发现隐藏补给。记得喝口水。";
+});
 $("refresh").addEventListener("click", () => loadHistory().catch((error) => message(error.message)));
 
 function showConnection() {

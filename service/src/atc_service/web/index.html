@@ -97,25 +97,35 @@
             </div>
           </form>
         </section>
-        <section class="panel execution" aria-labelledby="execution-title">
-          <div class="panel-heading">
-            <span class="section-icon execution-icon" aria-hidden="true"></span>
-            <h2 id="execution-title">执行计划</h2>
-          </div>
-          <ol id="stages" class="stages">
-            <li><span id="inspect-icon" class="stage-icon" aria-hidden="true"></span><span class="stage-title">上传并检查 ONNX</span><span id="inspect-state" class="status-pill" aria-live="polite">未开始</span></li>
-            <li><span id="compile-icon" class="stage-icon" aria-hidden="true"></span><span class="stage-title">编译模型</span><span id="compile-state" class="status-pill" aria-live="polite">未开始</span></li>
-          </ol>
-          <div id="task-detail" class="task-detail" hidden>
-            <div class="section-head"><h3 id="task-title">任务详情</h3><button id="cancel" class="quiet" type="button" hidden>取消任务</button></div>
-            <p id="task-message" class="help" aria-live="polite" hidden></p>
-            <div id="results" hidden><h3>输出文件</h3><ul id="downloads" class="downloads"></ul></div>
-            <div class="log-card">
-              <h3>执行日志</h3>
-              <pre id="logs" tabindex="0" aria-label="执行日志">等待日志…</pre>
+        <div class="execution-column">
+          <section class="panel execution" aria-labelledby="execution-title">
+            <div class="panel-heading">
+              <span class="section-icon execution-icon" aria-hidden="true"></span>
+              <h2 id="execution-title">执行计划</h2>
+            </div>
+            <ol id="stages" class="stages">
+              <li><span id="inspect-icon" class="stage-icon" aria-hidden="true"></span><span class="stage-title">上传并检查 ONNX</span><span id="inspect-state" class="status-pill" aria-live="polite">未开始</span></li>
+              <li><span id="compile-icon" class="stage-icon" aria-hidden="true"></span><span class="stage-title">编译模型</span><span id="compile-state" class="status-pill" aria-live="polite">未开始</span></li>
+            </ol>
+            <div id="task-detail" class="task-detail" hidden>
+              <div class="section-head"><h3 id="task-title">任务详情</h3><button id="cancel" class="quiet" type="button" hidden>取消任务</button></div>
+              <p id="task-message" class="help" aria-live="polite" hidden></p>
+              <div id="results" hidden><h3>输出文件</h3><ul id="downloads" class="downloads"></ul></div>
+              <div class="log-card">
+                <h3>执行日志</h3>
+                <pre id="logs" tabindex="0" aria-label="执行日志">等待日志…</pre>
+              </div>
+            </div>
+          </section>
+          <div class="execution-space">
+            <div class="compass-egg">
+              <button id="compass" class="compass" type="button" aria-label="工作台罗盘" aria-expanded="false" aria-controls="compass-note">
+                <span class="compass-needle" aria-hidden="true"></span>
+              </button>
+              <p id="compass-note" class="compass-note" role="status"></p>
             </div>
           </div>
-        </section>
+        </div>
       </div>
       <section class="panel history" aria-labelledby="history-title">
         <div class="section-head">
