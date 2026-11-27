@@ -127,6 +127,7 @@ function refreshStart() {
   const options = choices();
   const inputs = model?.inputs || [];
   const offline = !navigator.onLine;
+  const submitting = busy && Boolean(model?.ready);
   modelUpload.disabled = !session || busy || offline;
   modelPicker.disabled = modelUpload.disabled;
   $("new-model").disabled = busy;
@@ -145,7 +146,7 @@ function refreshStart() {
   if (!viewing || viewing.reuseInspection || viewing.inspection) renderStages(currentPlan(options));
   let hint = "";
   if (offline) hint = "网络恢复后可提交任务。";
-  else if (busy && model?.ready) hint = "正在上传数据并提交任务…";
+  else if (submitting) hint = options.calibration || options.validation ? "正在上传数据并提交任务…" : "正在提交任务…";
   else if (model?.submitted) hint = "已提交。可新建转换以使用另一份模型。";
   else if (!model) hint = "请选择本地 ONNX 文件。";
   else if (model.failed) hint = "模型检查失败，请更换文件后再试。";
@@ -155,8 +156,24 @@ function refreshStart() {
     try { configuration(); }
     catch (error) { hint = error.message; }
   }
-  $("start").disabled = busy || Boolean(hint);
-  $("start-hint").textContent = hint;
+  const start = $("start");
+  start.disabled = busy || Boolean(hint);
+  start.setAttribute("aria-busy", String(submitting));
+  const label = submitting ? "提交中…" : "开始执行";
+  if (start.textContent !== label) start.textContent = label;
+  $("execution-plan").toggleAttribute("data-submitting", submitting);
+  const hintElement = $("start-hint");
+  if (hintElement.textContent !== hint) hintElement.textContent = hint;
+}
+
+function playLaunchCue() {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const cue = $("launch-cue");
+  for (const animation of cue.getAnimations?.({ subtree: true }) ?? []) {
+    animation.currentTime = 0;
+    animation.play();
+  }
+  cue.classList.add("is-playing");
 }
 
 function stopWatching() {
@@ -499,6 +516,14 @@ bindDrop(modelUpload, async (transfer) => {
 });
 preventFileNavigation();
 
+for (const eventName of ["animationend", "animationcancel"]) {
+  $("launch-cue").addEventListener(eventName, (event) => {
+    if (event.target === event.currentTarget && event.animationName === "launch-reveal") {
+      event.currentTarget.classList.remove("is-playing");
+    }
+  });
+}
+
 $("compile-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if ($("start").disabled) return;
@@ -508,6 +533,7 @@ $("compile-form").addEventListener("submit", async (event) => {
   busy = true;
   const selected = model;
   refreshStart();
+  playLaunchCue();
   message("");
   try {
     const payload = configuration();

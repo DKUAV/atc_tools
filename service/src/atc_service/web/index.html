@@ -92,16 +92,25 @@
               <details id="raw-bin" hidden><summary>指定 .bin 源尺寸或类型</summary><div id="raw-inputs" class="input-options"></div></details>
             </fieldset>
             <div class="start-row">
-              <button id="start" class="primary" type="submit" disabled>开始执行</button>
+              <button id="start" class="primary" type="submit" aria-busy="false" disabled>开始执行</button>
               <p id="start-hint" class="help" aria-live="polite"></p>
             </div>
           </form>
         </section>
         <div class="execution-column">
-          <section class="panel execution" aria-labelledby="execution-title">
-            <div class="panel-heading">
+          <section id="execution-plan" class="panel execution" aria-labelledby="execution-title">
+            <div class="panel-heading execution-heading">
               <span class="section-icon execution-icon" aria-hidden="true"></span>
               <h2 id="execution-title">执行计划</h2>
+              <span id="launch-cue" class="launch-cue" aria-hidden="true">
+                <span class="launch-track">
+                  <span class="launch-trace"></span>
+                  <span class="launch-signal"></span>
+                  <span class="launch-node"></span>
+                  <span class="launch-node"></span>
+                  <span class="launch-node"></span>
+                </span>
+              </span>
             </div>
             <ol id="stages" class="stages">
               <li><span id="inspect-icon" class="stage-icon" aria-hidden="true"></span><span class="stage-title">上传并检查 ONNX</span><span id="inspect-state" class="status-pill" aria-live="polite">未开始</span></li>
