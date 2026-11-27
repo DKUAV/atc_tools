@@ -4,17 +4,37 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from hashlib import sha256
+from pathlib import Path
+from secrets import compare_digest
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from atc_service.config import Settings
-from atc_service.store import FileRecord, ResourceError, Store
+from atc_service.sessions import (
+    BrowserSession,
+    close_session,
+    open_session,
+    read_session,
+)
+from atc_service.store import FileRecord, ResourceError, Row, Store
+from atc_service.workflows import (
+    DATASET_EXTENSIONS,
+    Conversion,
+    browser_presets,
+    planned_stages,
+    resolve_workflow,
+)
+
+BROWSER_COOKIE = "atc_session"
 
 
 class Asset(BaseModel):
@@ -55,6 +75,7 @@ class Job(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     outputs: list[Asset] = Field(default_factory=list)
+    stages: dict[str, str] = Field(default_factory=dict)
 
 
 class LogPart(BaseModel):
@@ -63,6 +84,26 @@ class LogPart(BaseModel):
     attempt_id: UUID | None
     text: str
     next_offset: int
+
+
+class BrowserLogin(BaseModel):
+    """Accept the locally provisioned account credentials."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+    password: str = Field(min_length=1, max_length=128)
+
+
+class BrowserTask(BaseModel):
+    """Describe one account-owned row in the browser task history."""
+
+    id: UUID
+    filename: str
+    operation: str
+    preset: str | None
+    state: str
+    created_at: datetime
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -86,6 +127,7 @@ def create_app(settings: Settings) -> FastAPI:
     logger = logging.getLogger("atc_service.api")
     bearer = HTTPBearer(auto_error=False)
     app = FastAPI(title="ATC Tools Service", version="0.1.0")
+    presets = {preset.id: preset for preset in browser_presets(settings)}
 
     def account(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
@@ -120,6 +162,33 @@ def create_app(settings: Settings) -> FastAPI:
 
     Owner = Annotated[str, Depends(account)]
 
+    def browser_session(request: Request) -> BrowserSession:
+        """Authenticate a browser request and verify its mutation header.
+
+        Parameters
+        ----------
+        request
+            Request with a session cookie and a CSRF token for writes.
+
+        Returns
+        -------
+        BrowserSession
+            The authenticated browser session.
+
+        Raises
+        ------
+        HTTPException
+            The CSRF token is missing or mismatched.
+        """
+        session = read_session(store, request.cookies.get(BROWSER_COOKIE, ""))
+        if request.method != "GET" and not compare_digest(
+            request.headers.get("x-atc-csrf", "").encode(), session.csrf.encode()
+        ):
+            raise HTTPException(403, "Invalid request verification token.")
+        return session
+
+    Session = Annotated[BrowserSession, Depends(browser_session)]
+
     @app.middleware("http")
     async def log_request(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
@@ -142,6 +211,13 @@ def create_app(settings: Settings) -> FastAPI:
         request.state.request_id = request_id
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
+        if request.url.path == "/" or request.url.path.startswith("/web/"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+            )
         route = getattr(request.scope.get("route"), "path", "unmatched")
         logger.info(
             "request_id=%s method=%s route=%s status=%s",
@@ -170,6 +246,29 @@ def create_app(settings: Settings) -> FastAPI:
         """
         assert isinstance(error, ResourceError)
         return JSONResponse({"detail": str(error)}, status_code=error.status)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, error: Exception) -> Response:
+        """Report validation errors without reflecting sign-in credentials.
+
+        Parameters
+        ----------
+        request
+            Incoming request that failed validation.
+        error
+            FastAPI request validation error.
+
+        Returns
+        -------
+        Response
+            Validation response with a plain message for sign-in.
+        """
+        assert isinstance(error, RequestValidationError)
+        if request.url.path == "/web/api/login":
+            return JSONResponse(
+                {"detail": "Check the account name and password."}, status_code=422
+            )
+        return await request_validation_exception_handler(request, error)
 
     @app.get("/healthz")
     def health() -> dict[str, str]:
@@ -207,44 +306,53 @@ def create_app(settings: Settings) -> FastAPI:
             "max_upload_bytes": settings.max_upload_bytes,
         }
 
-    @app.post("/v1/assets", status_code=201)
-    async def upload(
+    async def save_upload(
         request: Request,
-        owner: Owner,
-        filename: Annotated[str, Query(min_length=6, max_length=200)],
-    ) -> Asset:
-        """Stream a single ONNX upload while enforcing size limits.
+        filename: str,
+        register: Callable[[FileRecord], Row],
+        kind: Literal["onnx", "dataset"] = "onnx",
+    ) -> Row:
+        """Stream one allowed input file while enforcing size limits.
 
         Parameters
         ----------
         request
             Body with the ONNX file bytes.
-        owner
-            Authenticated account.
         filename
             Display filename used when downloading the asset.
+        register
+            Register the completed file for the authenticated caller.
+        kind
+            Allowlist and stored asset kind for the input.
 
         Returns
         -------
-        Asset
-            New owned asset and checksum.
+        dict
+            Registered file or its queued inspection.
 
         Raises
         ------
         HTTPException
             The upload has an invalid filename, media type, or size.
         """
-        if not filename.lower().endswith(".onnx") or any(
+        extensions = {".onnx"} if kind == "onnx" else DATASET_EXTENSIONS
+        if Path(filename).suffix.lower() not in extensions or any(
             char in "/\\" or ord(char) < 32 or ord(char) == 127 for char in filename
         ):
-            raise HTTPException(400, "Provide a plain .onnx filename.")
+            raise HTTPException(
+                400, "Provide a plain filename with a supported extension."
+            )
         media_type = (
             request.headers.get("content-type", "").partition(";")[0].strip().lower()
         )
         if media_type != "application/octet-stream":
             raise HTTPException(415, "Upload the file as application/octet-stream.")
         declared = request.headers.get("content-length")
-        if declared and int(declared) > settings.max_upload_bytes:
+        if declared and (not declared.isascii() or not declared.isdecimal()):
+            raise HTTPException(400, "Invalid Content-Length header.")
+        if declared and (
+            len(declared) > 20 or int(declared) > settings.max_upload_bytes
+        ):
             raise HTTPException(413, "Upload exceeds the configured size limit.")
 
         asset_id = uuid4()
@@ -263,17 +371,43 @@ def create_app(settings: Settings) -> FastAPI:
                     digest.update(chunk)
                     await run_in_threadpool(output.write, chunk)
             if size == 0:
-                raise HTTPException(400, "The model file is empty.")
+                raise HTTPException(400, "The uploaded file is empty.")
             staging.replace(final)
-            record = FileRecord(asset_id, "onnx", filename, size, digest.hexdigest())
+            record = FileRecord(asset_id, kind, filename, size, digest.hexdigest())
             try:
-                row = await run_in_threadpool(store.add_asset, owner, record)
+                return await run_in_threadpool(register, record)
             except ResourceError:
                 final.unlink(missing_ok=True)
                 raise
-            return Asset.model_validate(row)
         finally:
             staging.unlink(missing_ok=True)
+
+    @app.post("/v1/assets", status_code=201)
+    async def upload(
+        request: Request,
+        owner: Owner,
+        filename: Annotated[str, Query(min_length=6, max_length=200)],
+    ) -> Asset:
+        """Upload a model for a bearer-token caller.
+
+        Parameters
+        ----------
+        request
+            Request with the model bytes.
+        owner
+            Authenticated account.
+        filename
+            Original display filename.
+
+        Returns
+        -------
+        Asset
+            Newly registered model.
+        """
+        row = await save_upload(
+            request, filename, lambda record: store.add_asset(owner, record)
+        )
+        return Asset.model_validate(row)
 
     @app.get("/v1/assets/{asset_id}")
     def asset(owner: Owner, asset_id: UUID) -> Asset:
@@ -293,8 +427,9 @@ def create_app(settings: Settings) -> FastAPI:
         """
         return Asset.model_validate(store.asset(owner, asset_id))
 
-    @app.get("/v1/assets/{asset_id}/download")
-    def download(owner: Owner, asset_id: UUID) -> FileResponse:
+    def asset_download(
+        owner: str, asset_id: UUID, session_id: UUID | None = None
+    ) -> FileResponse:
         """Return the file registered under an owned asset ID.
 
         Parameters
@@ -303,13 +438,15 @@ def create_app(settings: Settings) -> FastAPI:
             Authenticated account.
         asset_id
             Asset to download.
+        session_id
+            Browser session allowed to serve this file, if applicable.
 
         Returns
         -------
         FileResponse
             File attachment with its registered name.
         """
-        row = store.asset(owner, asset_id)
+        row = store.asset(owner, asset_id, session_id)
         path = assets / str(asset_id)
         if not path.is_file():
             raise HTTPException(404, "Asset file is unavailable.")
@@ -317,12 +454,30 @@ def create_app(settings: Settings) -> FastAPI:
             path, filename=row["filename"], media_type="application/octet-stream"
         )
 
-    @app.post("/v1/jobs", status_code=202)
-    def submit(
+    @app.get("/v1/assets/{asset_id}/download")
+    def download(owner: Owner, asset_id: UUID) -> FileResponse:
+        """Download an asset for a bearer-token caller.
+
+        Parameters
+        ----------
+        owner
+            Authenticated account.
+        asset_id
+            Owned asset to serve.
+
+        Returns
+        -------
+        FileResponse
+            Registered file as an attachment.
+        """
+        return asset_download(owner, asset_id)
+
+    def queue_job(
         request: Request,
         body: Submission,
-        owner: Owner,
-        idempotency_key: Annotated[str | None, Header(max_length=128)] = None,
+        owner: str,
+        idempotency_key: str | None,
+        session_id: UUID | None = None,
     ) -> Job:
         """Register an operation using an administrator-controlled execution image.
 
@@ -336,6 +491,8 @@ def create_app(settings: Settings) -> FastAPI:
             Authenticated account.
         idempotency_key
             Optional key that identifies a retried submission.
+        session_id
+            Browser session owning the input, if applicable.
 
         Returns
         -------
@@ -367,6 +524,7 @@ def create_app(settings: Settings) -> FastAPI:
             body.preset,
             simulated,
             idempotency_key,
+            session_id,
         )
         logger.info(
             "request_id=%s job_id=%s operation=%s",
@@ -377,6 +535,33 @@ def create_app(settings: Settings) -> FastAPI:
         # An idempotent request may refer to an already completed job.
         row, outputs = store.job(owner, row["id"])
         return Job.model_validate({**row, "outputs": outputs})
+
+    @app.post("/v1/jobs", status_code=202)
+    def submit(
+        request: Request,
+        body: Submission,
+        owner: Owner,
+        idempotency_key: Annotated[str | None, Header(max_length=128)] = None,
+    ) -> Job:
+        """Submit one allowlisted operation for a bearer-token caller.
+
+        Parameters
+        ----------
+        request
+            Request with the correlation identifier.
+        body
+            Operation and input selection.
+        owner
+            Authenticated account.
+        idempotency_key
+            Reusable key for a retried submission.
+
+        Returns
+        -------
+        Job
+            Accepted operation.
+        """
+        return queue_job(request, body, owner, idempotency_key)
 
     @app.get("/v1/jobs/{job_id}")
     def job(owner: Owner, job_id: UUID) -> Job:
@@ -452,5 +637,352 @@ def create_app(settings: Settings) -> FastAPI:
                 )
         except FileNotFoundError:
             return LogPart(attempt_id=attempt, text="", next_offset=0)
+
+    @app.post("/web/api/login", status_code=204)
+    def login(request: Request, body: BrowserLogin) -> Response:
+        """Set a browser session cookie after verifying the account password.
+
+        Parameters
+        ----------
+        request
+            Same-origin login request.
+        body
+            Account name and password.
+
+        Returns
+        -------
+        Response
+            Empty response with the new session cookie.
+        """
+        if request.headers.get("x-atc-login") != "1":
+            raise HTTPException(403, "Missing sign-in request header.")
+        token = open_session(
+            store, body.username, body.password, request.cookies.get(BROWSER_COOKIE, "")
+        )
+        response = Response(status_code=204)
+        response.set_cookie(
+            BROWSER_COOKIE,
+            token,
+            path="/web/api",
+            httponly=True,
+            secure=settings.browser_secure_cookies,
+            samesite="strict",
+        )
+        return response
+
+    @app.get("/web/api/session")
+    def session_info(session: Session) -> dict[str, object]:
+        """Return the active account, verification token, and allowed presets.
+
+        Parameters
+        ----------
+        session
+            Authenticated browser session.
+
+        Returns
+        -------
+        dict
+            Account name, CSRF token, and available compile capabilities.
+        """
+        return {
+            "username": session.owner,
+            "csrf": session.csrf,
+            **capabilities(session.owner),
+            "workflow_presets": [preset.public() for preset in presets.values()],
+        }
+
+    @app.post("/web/api/logout", status_code=204)
+    def logout(session: Session) -> Response:
+        """End the browser session and revoke access to its temporary files.
+
+        Parameters
+        ----------
+        session
+            Authenticated browser session.
+
+        Returns
+        -------
+        Response
+            Empty response expiring the cookie.
+        """
+        close_session(store, session)
+        response = Response(status_code=204)
+        response.delete_cookie(
+            BROWSER_COOKIE,
+            path="/web/api",
+            httponly=True,
+            secure=settings.browser_secure_cookies,
+            samesite="strict",
+        )
+        return response
+
+    @app.post("/web/api/models", status_code=202)
+    async def browser_model(
+        request: Request,
+        session: Session,
+        filename: Annotated[str, Query(min_length=6, max_length=200)],
+    ) -> Job:
+        """Upload a local model and automatically enqueue its inspection.
+
+        Parameters
+        ----------
+        request
+            The uploaded ONNX bytes.
+        session
+            Browser session that will own the file.
+        filename
+            Original local filename.
+
+        Returns
+        -------
+        Job
+            Queued inspection and its model ID.
+        """
+        row = await save_upload(
+            request,
+            filename,
+            lambda record: store.add_browser_model(session.owner, record, session.id),
+        )
+        logger.info(
+            "request_id=%s job_id=%s operation=inspect_onnx",
+            request.state.request_id,
+            row["id"],
+        )
+        return Job.model_validate(row)
+
+    @app.post("/web/api/dataset-files", status_code=201)
+    async def browser_dataset(
+        request: Request,
+        session: Session,
+        filename: Annotated[str, Query(min_length=5, max_length=200)],
+    ) -> Asset:
+        """Save one dataset file for the current browser session.
+
+        Parameters
+        ----------
+        request
+            Raw file bytes.
+        session
+            Owner of the new file.
+        filename
+            Local filename used to select its decoder.
+
+        Returns
+        -------
+        Asset
+            File ID for use in an ordered workflow sample.
+        """
+        row = await save_upload(
+            request,
+            filename,
+            lambda record: store.add_asset(session.owner, record, session.id),
+            "dataset",
+        )
+        return Asset.model_validate(row)
+
+    @app.post("/web/api/conversions", status_code=202)
+    def browser_conversion(
+        request: Request,
+        body: Conversion,
+        session: Session,
+        idempotency_key: Annotated[str, Header(min_length=1, max_length=128)],
+    ) -> Job:
+        """Run a supported compile preset using a model inspected in this session.
+
+        Parameters
+        ----------
+        request
+            Request carrying the correlation identifier.
+        body
+            The inspected model and selected preset.
+        session
+            Owner of the temporary working files.
+        idempotency_key
+            Stable submission identifier for client retries.
+
+        Returns
+        -------
+        Job
+            Accepted conversion and current stage state.
+        """
+        preset = presets.get(body.preset)
+        if preset is None:
+            if body.model_dump(exclude_defaults=True).keys() != {"model_id", "preset"}:
+                raise HTTPException(
+                    422, "Select an enabled workflow preset for these options."
+                )
+            operation = Submission(
+                operation="compile_om", input_id=body.model_id, preset=body.preset
+            )
+            return queue_job(
+                request, operation, session.owner, idempotency_key, session.id
+            )
+        workflow = resolve_workflow(body, preset)
+        row = store.submit(
+            session.owner,
+            "compile_om",
+            body.model_id,
+            preset.image,
+            preset.id,
+            preset.simulated,
+            idempotency_key,
+            session.id,
+            workflow,
+        )
+        logger.info(
+            "request_id=%s job_id=%s preset=%s",
+            request.state.request_id,
+            row["id"],
+            preset.id,
+        )
+        return browser_task(session, row["id"])
+
+    @app.get("/web/api/tasks")
+    def browser_tasks(session: Session) -> list[BrowserTask]:
+        """List the latest browser tasks belonging to the active account.
+
+        Parameters
+        ----------
+        session
+            Authenticated browser session.
+
+        Returns
+        -------
+        list[BrowserTask]
+            The most recent browser tasks with their original filenames.
+        """
+        with store.connect() as db:
+            rows = db.execute(
+                "SELECT j.id, a.filename, j.operation, j.preset, j.state, j.created_at "
+                "FROM jobs j JOIN assets a ON a.id = j.input_id "
+                "WHERE j.owner = %s AND j.browser_session_id IS NOT NULL "
+                "ORDER BY j.created_at DESC, j.id DESC LIMIT 50",
+                (session.owner,),
+            ).fetchall()
+        return [BrowserTask.model_validate(row) for row in rows]
+
+    @app.get("/web/api/tasks/{job_id}")
+    def browser_task(session: Session, job_id: UUID) -> Job:
+        """Show task state and only files accessible in the current session.
+
+        Parameters
+        ----------
+        session
+            Authenticated browser session.
+        job_id
+            Account-owned task to view.
+
+        Returns
+        -------
+        Job
+            Task status with current-session outputs.
+        """
+        row, outputs = store.job(session.owner, job_id)
+        available = row["browser_session_id"] == session.id
+        stages = row["stages"]
+        if row["workflow"] is not None:
+            stages = {
+                stage: stages.get(stage, "pending")
+                for stage in planned_stages(row["workflow"])
+            }
+            if row["state"] in {"failed", "cancelled"}:
+                marked = False
+                for stage, status in stages.items():
+                    if status == "running":
+                        stages[stage] = row["state"]
+                        marked = True
+                if (
+                    row["state"] == "failed"
+                    and not marked
+                    and "failed" not in stages.values()
+                ):
+                    first_pending = next(
+                        (
+                            stage
+                            for stage, status in stages.items()
+                            if status == "pending"
+                        ),
+                        None,
+                    )
+                    if first_pending is not None:
+                        stages[first_pending] = "failed"
+        return Job.model_validate(
+            {**row, "stages": stages, "outputs": outputs if available else []}
+        )
+
+    @app.get("/web/api/tasks/{job_id}/logs")
+    def browser_log(
+        session: Session,
+        job_id: UUID,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> LogPart:
+        """Read the current attempt log across sessions of the same account.
+
+        Parameters
+        ----------
+        session
+            Authenticated browser session.
+        job_id
+            Account-owned task to view.
+        offset
+            Byte offset from the previous response.
+
+        Returns
+        -------
+        LogPart
+            A bounded slice and the next cursor.
+        """
+        return read_log(session.owner, job_id, offset)
+
+    @app.post("/web/api/tasks/{job_id}/cancel", status_code=202)
+    def browser_cancel(session: Session, job_id: UUID) -> Job:
+        """Cancel a queued task or request that its running attempt stop.
+
+        Parameters
+        ----------
+        session
+            Authenticated browser session.
+        job_id
+            Account-owned task to cancel.
+
+        Returns
+        -------
+        Job
+            Updated account-owned task state.
+        """
+        store.cancel(session.owner, job_id)
+        return browser_task(session, job_id)
+
+    @app.get("/web/api/files/{asset_id}")
+    def browser_file(session: Session, asset_id: UUID) -> FileResponse:
+        """Download an output from the current browser session.
+
+        Parameters
+        ----------
+        session
+            Authenticated browser session that owns the file.
+        asset_id
+            File to download.
+
+        Returns
+        -------
+        FileResponse
+            Registered file as an attachment.
+        """
+        return asset_download(session.owner, asset_id, session.id)
+
+    web_dir = Path(__file__).with_name("web")
+    app.mount("/web/static", StaticFiles(directory=web_dir), name="workbench-static")
+
+    @app.get("/", include_in_schema=False)
+    def workbench() -> FileResponse:
+        """Serve the local conversion workbench.
+
+        Returns
+        -------
+        FileResponse
+            Workbench HTML with its same-origin asset references.
+        """
+        return FileResponse(web_dir / "index.html", media_type="text/html")
 
     return app

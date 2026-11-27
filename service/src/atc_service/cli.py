@@ -11,6 +11,7 @@ import uvicorn
 from atc_service.api import create_app
 from atc_service.config import Settings
 from atc_service.logs import configure_logging
+from atc_service.sessions import set_browser_password
 from atc_service.store import Store
 
 
@@ -30,11 +31,15 @@ def main() -> int:
         "issue-token", help="Provision an account and issue a token."
     )
     issue.add_argument("username")
+    password = commands.add_parser(
+        "set-browser-password", help="Set a local account password."
+    )
+    password.add_argument("username")
     commands.add_parser(
         "revoke-token", help="Revoke a token entered at a private prompt."
     )
     args = parser.parse_args()
-    if args.command == "issue-token" and not re.fullmatch(
+    if args.command in ("issue-token", "set-browser-password") and not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", args.username
     ):
         parser.error(
@@ -46,6 +51,13 @@ def main() -> int:
     store.migrate()
     if args.command == "issue-token":
         print(store.issue_token(args.username))
+    elif args.command == "set-browser-password":
+        secret = getpass.getpass("Browser password: ")
+        if not 12 <= len(secret) <= 128:
+            parser.error("Use a password of 12 to 128 characters.")
+        if secret != getpass.getpass("Repeat password: "):
+            parser.error("Passwords do not match.")
+        set_browser_password(store, args.username, secret)
     elif args.command == "revoke-token":
         token = getpass.getpass("Token to revoke: ")
         if not store.revoke_token(token):

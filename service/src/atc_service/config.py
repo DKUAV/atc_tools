@@ -24,6 +24,11 @@ class Settings:
     memory_bytes: int = 4 * 1024 * 1024 * 1024
     max_pending_jobs: int = 8
     max_account_bytes: int = 4 * 1024 * 1024 * 1024
+    browser_secure_cookies: bool = True
+    browser_session_seconds: int = 12 * 60 * 60
+    compile_910b2_image: str | None = None
+    amct_targets: tuple[str, ...] = ()
+    ascend_device: int | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -58,6 +63,17 @@ class Settings:
             max_account_bytes=int(
                 os.environ.get("ATC_MAX_ACCOUNT_BYTES", 4 * 1024 * 1024 * 1024)
             ),
+            browser_secure_cookies=os.environ.get("ATC_BROWSER_SECURE_COOKIES") != "0",
+            browser_session_seconds=int(
+                os.environ.get("ATC_BROWSER_SESSION_SECONDS", 43200)
+            ),
+            compile_910b2_image=os.environ.get("ATC_COMPILE_910B2_IMAGE") or None,
+            amct_targets=tuple(
+                filter(None, os.environ.get("ATC_AMCT_TARGETS", "").split(","))
+            ),
+            ascend_device=int(device)
+            if (device := os.environ.get("ATC_910B2_DEVICE"))
+            else None,
         )
 
     def __post_init__(self) -> None:
@@ -70,6 +86,10 @@ class Settings:
         """
         if not self.docker_data_dir.is_absolute():
             raise ValueError("ATC_DOCKER_DATA_DIR must be an absolute Linux path.")
+        if not set(self.amct_targets) <= {"310B4", "910B2"}:
+            raise ValueError("ATC_AMCT_TARGETS may contain 310B4 and 910B2.")
+        if self.ascend_device is not None and self.ascend_device < 0:
+            raise ValueError("ATC_910B2_DEVICE must be nonnegative.")
         if (
             min(
                 self.max_upload_bytes,
@@ -79,6 +99,7 @@ class Settings:
                 self.memory_bytes,
                 self.max_pending_jobs,
                 self.max_account_bytes,
+                self.browser_session_seconds,
             )
             <= 0
         ):

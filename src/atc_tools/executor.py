@@ -37,6 +37,11 @@ def main() -> int:
                 f"Inspected {len(metadata['inputs'])} inputs and {len(metadata['outputs'])} outputs."
             )
         elif request["operation"] == "compile_om":
+            if request.get("workflow") is not None:
+                from atc_tools.workflow import run_workflow
+
+                run_workflow(inputs, output, request)
+                return 0
             simulated = request["simulated"]
             print(
                 "Simulating Ascend310B4 compilation."
@@ -82,7 +87,13 @@ def main() -> int:
         (output / "result.json").write_text(
             json.dumps({"version": 1, "artifacts": artifacts}), encoding="utf-8"
         )
-    except (OSError, ValueError, DecodeError, subprocess.CalledProcessError) as error:
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        DecodeError,
+        subprocess.CalledProcessError,
+    ) as error:
         print(f"Task failed: {error}", flush=True)
         return 1
     return 0

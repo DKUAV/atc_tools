@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from atc_service.config import Settings
 
@@ -71,25 +72,24 @@ class Store:
         )
 
     def migrate(self) -> None:
-        """Apply the initial schema under a database migration lock."""
+        """Apply schema migrations under a database migration lock."""
         with self.connect() as db:
             db.execute("SELECT pg_advisory_xact_lock(792640301)")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS schema_versions (version integer PRIMARY KEY)"
             )
-            if (
-                db.execute(
-                    "SELECT version FROM schema_versions WHERE version = 1"
-                ).fetchone()
-                is None
+            for version, filename in enumerate(
+                ("001_initial.sql", "002_browser.sql", "003_workflows.sql"), 1
             ):
-                migration = (
-                    files("atc_service")
-                    .joinpath("001_initial.sql")
-                    .read_text(encoding="utf-8")
-                )
-                db.execute(migration.encode("utf-8"), prepare=False)
-                db.execute("INSERT INTO schema_versions (version) VALUES (1)")
+                if (
+                    db.execute(
+                        "SELECT 1 FROM schema_versions WHERE version = %s", (version,)
+                    ).fetchone()
+                    is None
+                ):
+                    migration = files("atc_service").joinpath(filename).read_bytes()
+                    db.execute(migration, prepare=False)
+                    db.execute("INSERT INTO schema_versions VALUES (%s)", (version,))
 
     def issue_token(self, username: str) -> str:
         """Provision an account and issue one bearer token.
@@ -159,7 +159,11 @@ class Store:
         return row["username"] if row else None
 
     def _insert_asset(
-        self, db: psycopg.Connection[Row], owner: str, record: FileRecord
+        self,
+        db: psycopg.Connection[Row],
+        owner: str,
+        record: FileRecord,
+        session_id: UUID | None,
     ) -> Row:
         """Register one complete file in the caller's transaction.
 
@@ -171,6 +175,8 @@ class Store:
             Account that owns the new file.
         record
             Metadata for the published file.
+        session_id
+            Browser session that owns the file, if applicable.
 
         Returns
         -------
@@ -183,15 +189,15 @@ class Store:
             The account's storage quota would be exceeded.
         """
         used = db.execute(
-            "SELECT COALESCE(sum(size), 0) AS total FROM assets WHERE owner = %s",
+            "SELECT COALESCE(sum(size), 0) AS total FROM assets WHERE owner = %s AND NOT cleared",
             (owner,),
         ).fetchone()
         assert used is not None
         if used["total"] + record.size > self.settings.max_account_bytes:
             raise ResourceError(413, "Account storage quota exceeded.")
         row = db.execute(
-            "INSERT INTO assets (id, owner, kind, filename, size, sha256) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING *",
+            "INSERT INTO assets (id, owner, kind, filename, size, sha256, browser_session_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *",
             (
                 record.id,
                 owner,
@@ -199,12 +205,15 @@ class Store:
                 record.filename,
                 record.size,
                 record.sha256,
+                session_id,
             ),
         ).fetchone()
         assert row is not None
         return row
 
-    def add_asset(self, owner: str, record: FileRecord) -> Row:
+    def add_asset(
+        self, owner: str, record: FileRecord, session_id: UUID | None = None
+    ) -> Row:
         """Publish a complete uploaded file for its owner.
 
         Parameters
@@ -213,6 +222,8 @@ class Store:
             Authenticated account.
         record
             Metadata for the completed upload.
+        session_id
+            Current browser session for a dataset file.
 
         Returns
         -------
@@ -223,9 +234,47 @@ class Store:
             db.execute(
                 "SELECT username FROM accounts WHERE username = %s FOR UPDATE", (owner,)
             )
-            return self._insert_asset(db, owner, record)
+            self._lock_session(db, owner, session_id)
+            return self._insert_asset(db, owner, record, session_id)
 
-    def asset(self, owner: str, asset_id: UUID) -> Row:
+    def add_browser_model(
+        self, owner: str, record: FileRecord, session_id: UUID
+    ) -> Row:
+        """Register a browser upload and its inspection in one transaction.
+
+        Parameters
+        ----------
+        owner
+            Authenticated account.
+        record
+            Completed ONNX upload.
+        session_id
+            Active browser session that will own the file.
+
+        Returns
+        -------
+        dict
+            Queued inspection job and its input ID.
+        """
+        with self.connect() as db:
+            db.execute(
+                "SELECT username FROM accounts WHERE username = %s FOR UPDATE", (owner,)
+            )
+            self._lock_session(db, owner, session_id)
+            self._insert_asset(db, owner, record, session_id)
+            return self._enqueue(
+                db,
+                owner,
+                "inspect_onnx",
+                record.id,
+                self.settings.inspect_image,
+                None,
+                False,
+                None,
+                session_id,
+            )
+
+    def asset(self, owner: str, asset_id: UUID, session_id: UUID | None = None) -> Row:
         """Read a file record scoped to its owner.
 
         Parameters
@@ -234,6 +283,8 @@ class Store:
             Authenticated account.
         asset_id
             Requested asset.
+        session_id
+            Browser session used to access the file, if applicable.
 
         Returns
         -------
@@ -247,11 +298,45 @@ class Store:
         """
         with self.connect() as db:
             row = db.execute(
-                "SELECT * FROM assets WHERE id = %s AND owner = %s", (asset_id, owner)
+                "SELECT a.* FROM assets a LEFT JOIN browser_sessions s ON s.id = a.browser_session_id "
+                "WHERE a.id = %s AND a.owner = %s AND NOT a.cleared "
+                "AND a.browser_session_id IS NOT DISTINCT FROM %s "
+                "AND (s.id IS NULL OR (NOT s.closed AND s.expires_at > now()))",
+                (asset_id, owner, session_id),
             ).fetchone()
         if row is None:
             raise ResourceError(404, "Asset not found.")
         return row
+
+    def _lock_session(
+        self, db: psycopg.Connection[Row], owner: str, session_id: UUID | None
+    ) -> None:
+        """Hold a live browser session open while a file reference is created.
+
+        Parameters
+        ----------
+        db
+            Transaction creating the reference.
+        owner
+            Authenticated account.
+        session_id
+            Browser session, if applicable.
+
+        Raises
+        ------
+        ResourceError
+            The browser session is closed or expired.
+        """
+        if (
+            session_id is not None
+            and db.execute(
+                "SELECT 1 FROM browser_sessions WHERE id = %s AND owner = %s "
+                "AND NOT closed AND expires_at > clock_timestamp() FOR UPDATE",
+                (session_id, owner),
+            ).fetchone()
+            is None
+        ):
+            raise ResourceError(401, "Your session ended. Sign in again.")
 
     def submit(
         self,
@@ -262,6 +347,8 @@ class Store:
         preset: str | None,
         simulated: bool,
         key: str | None,
+        session_id: UUID | None = None,
+        workflow: Row | None = None,
     ) -> Row:
         """Validate ownership, apply quotas, and persist a new job.
 
@@ -281,6 +368,10 @@ class Store:
             Whether compilation is a simulation.
         key
             Optional account-scoped idempotency key.
+        session_id
+            Active browser session that owns the input.
+        workflow
+            Resolved browser workflow and its ordered dataset references.
 
         Returns
         -------
@@ -297,6 +388,7 @@ class Store:
             db.execute(
                 "SELECT username FROM accounts WHERE username = %s FOR UPDATE", (owner,)
             )
+            self._lock_session(db, owner, session_id)
             if key is not None:
                 previous = db.execute(
                     "SELECT * FROM jobs WHERE owner = %s AND idempotency_key = %s",
@@ -307,15 +399,18 @@ class Store:
                         previous["operation"],
                         previous["input_id"],
                         previous["preset"],
-                    ) != (operation, input_id, preset):
+                        previous["browser_session_id"],
+                        previous["workflow"],
+                    ) != (operation, input_id, preset, session_id, workflow):
                         raise ResourceError(
                             409,
                             "Idempotency key already used with different parameters.",
                         )
                     return previous
             asset = db.execute(
-                "SELECT validated FROM assets WHERE id = %s AND owner = %s AND kind = 'onnx'",
-                (input_id, owner),
+                "SELECT validated FROM assets WHERE id = %s AND owner = %s AND kind = 'onnx' "
+                "AND NOT cleared AND browser_session_id IS NOT DISTINCT FROM %s",
+                (input_id, owner, session_id),
             ).fetchone()
             if asset is None:
                 raise ResourceError(404, "ONNX asset not found.")
@@ -323,20 +418,111 @@ class Store:
                 raise ResourceError(
                     409, "Run a successful ONNX inspection before compiling."
                 )
-            pending = db.execute(
-                "SELECT count(*) AS total FROM jobs WHERE owner = %s AND state IN ('queued', 'running')",
-                (owner,),
-            ).fetchone()
-            assert pending is not None
-            if pending["total"] >= self.settings.max_pending_jobs:
-                raise ResourceError(429, "Account pending job limit reached.")
-            job = db.execute(
-                "INSERT INTO jobs (id, owner, operation, input_id, image, preset, simulated, idempotency_key) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
-                (uuid4(), owner, operation, input_id, image, preset, simulated, key),
-            ).fetchone()
-            assert job is not None
-            return job
+            if workflow is not None:
+                ids = {
+                    UUID(value)
+                    for role in ("calibration", "validation")
+                    for sample in workflow[role]
+                    for value in sample
+                }
+                if ids:
+                    owned = db.execute(
+                        "SELECT count(*) AS total FROM assets WHERE id = ANY(%s) AND owner = %s "
+                        "AND browser_session_id = %s AND kind = 'dataset' AND NOT cleared",
+                        (list(ids), owner, session_id),
+                    ).fetchone()
+                    if owned is None or owned["total"] != len(ids):
+                        raise ResourceError(
+                            404,
+                            "One or more dataset files are unavailable in this session.",
+                        )
+            return self._enqueue(
+                db,
+                owner,
+                operation,
+                input_id,
+                image,
+                preset,
+                simulated,
+                key,
+                session_id,
+                workflow,
+            )
+
+    def _enqueue(
+        self,
+        db: psycopg.Connection[Row],
+        owner: str,
+        operation: str,
+        input_id: UUID,
+        image: str,
+        preset: str | None,
+        simulated: bool,
+        key: str | None,
+        session_id: UUID | None,
+        workflow: Row | None = None,
+    ) -> Row:
+        """Queue a job after checking its prerequisites and ownership.
+
+        Parameters
+        ----------
+        db
+            Transaction holding the account row lock.
+        owner
+            Account submitting the job.
+        operation
+            Allowlisted operation.
+        input_id
+            Owned input asset.
+        image
+            Administrator-selected executor image.
+        preset
+            Validated preset ID.
+        simulated
+            Whether compilation is simulated.
+        key
+            Optional submission idempotency key.
+        session_id
+            Browser session that owns the files, if applicable.
+        workflow
+            Optional snapshot of the browser conversion settings.
+
+        Returns
+        -------
+        dict
+            Queued job record.
+
+        Raises
+        ------
+        ResourceError
+            The account has reached its pending job limit.
+        """
+        pending = db.execute(
+            "SELECT count(*) AS total FROM jobs WHERE owner = %s AND state IN ('queued', 'running')",
+            (owner,),
+        ).fetchone()
+        assert pending is not None
+        if pending["total"] >= self.settings.max_pending_jobs:
+            raise ResourceError(429, "Account pending job limit reached.")
+        job = db.execute(
+            "INSERT INTO jobs (id, owner, operation, input_id, image, preset, simulated, "
+            "idempotency_key, browser_session_id, workflow) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
+            (
+                uuid4(),
+                owner,
+                operation,
+                input_id,
+                image,
+                preset,
+                simulated,
+                key,
+                session_id,
+                Jsonb(workflow) if workflow is not None else None,
+            ),
+        ).fetchone()
+        assert job is not None
+        return job
 
     def job(self, owner: str, job_id: UUID) -> tuple[Row, list[Row]]:
         """Read an owned job and its published output records.
@@ -364,16 +550,91 @@ class Store:
             ).fetchone()
             if job is None:
                 raise ResourceError(404, "Job not found.")
-            outputs = (
-                db.execute(
-                    "SELECT a.* FROM assets a JOIN job_outputs o ON a.id = o.asset_id "
-                    "WHERE o.job_id = %s AND a.owner = %s ORDER BY a.filename",
-                    (job_id, owner),
-                ).fetchall()
-                if job["state"] == "succeeded"
-                else []
-            )
+            outputs = db.execute(
+                "SELECT a.* FROM assets a JOIN job_outputs o ON a.id = o.asset_id "
+                "WHERE o.job_id = %s AND a.owner = %s ORDER BY a.filename",
+                (job_id, owner),
+            ).fetchall()
             return job, outputs
+
+    def publish_progress(
+        self, job: Row, stages: dict[str, str], records: list[FileRecord]
+    ) -> None:
+        """Persist stage states and available artifacts for the running attempt.
+
+        Parameters
+        ----------
+        job
+            Claimed job and attempt ID.
+        stages
+            Validated stage snapshot.
+        records
+            Artifacts available for immediate download.
+        """
+        with self.connect() as db:
+            changed = db.execute(
+                "UPDATE jobs SET stages = %s WHERE id = %s AND attempt_id = %s AND state = 'running'",
+                (Jsonb(stages), job["id"], job["attempt_id"]),
+            )
+            if changed.rowcount != 1:
+                raise ResourceError(409, "The workflow attempt is no longer active.")
+            self._publish_outputs(db, job, records)
+
+    def _publish_outputs(
+        self, db: psycopg.Connection[Row], job: Row, records: list[FileRecord]
+    ) -> None:
+        """Register output assets in a job transaction.
+
+        Parameters
+        ----------
+        db
+            Active publication transaction.
+        job
+            Job that produced the files.
+        records
+            Verified file metadata.
+        """
+        if not records:
+            return
+        db.execute(
+            "SELECT username FROM accounts WHERE username = %s FOR UPDATE",
+            (job["owner"],),
+        )
+        for record in records:
+            self._insert_asset(db, job["owner"], record, job["browser_session_id"])
+            db.execute(
+                "INSERT INTO job_outputs VALUES (%s, %s)", (job["id"], record.id)
+            )
+
+    def dataset_sources(self, job: Row) -> dict[str, str]:
+        """Find the filenames of the dataset assets used by a claimed workflow.
+
+        Parameters
+        ----------
+        job
+            Claimed job holding its session assets in use.
+
+        Returns
+        -------
+        dict
+            Original filename of each workflow asset ID.
+        """
+        workflow = job["workflow"]
+        ids = {
+            UUID(value)
+            for role in ("calibration", "validation")
+            for sample in workflow[role]
+            for value in sample
+        }
+        if not ids:
+            return {}
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT id, filename FROM assets WHERE id = ANY(%s) AND owner = %s "
+                "AND browser_session_id = %s AND kind = 'dataset' AND NOT cleared",
+                (list(ids), job["owner"], job["browser_session_id"]),
+            ).fetchall()
+        return {str(row["id"]): row["filename"] for row in rows}
 
     def cancel(self, owner: str, job_id: UUID) -> Row:
         """Cancel a queued job or request cancellation of a running job.
@@ -508,16 +769,7 @@ class Store:
                 else "succeeded"
             )
             if state == "succeeded":
-                db.execute(
-                    "SELECT username FROM accounts WHERE username = %s FOR UPDATE",
-                    (job["owner"],),
-                )
-                for record in records:
-                    self._insert_asset(db, job["owner"], record)
-                    db.execute(
-                        "INSERT INTO job_outputs VALUES (%s, %s)",
-                        (job["id"], record.id),
-                    )
+                self._publish_outputs(db, job, records)
                 if job["operation"] == "inspect_onnx":
                     db.execute(
                         "UPDATE assets SET validated = true WHERE id = %s",
@@ -528,3 +780,34 @@ class Store:
                 (state, error, exit_code, job["id"]),
             )
             return state == "succeeded"
+
+    def clear_browser_files(self) -> None:
+        """Remove files from closed or expired sessions after their jobs finish.
+
+        Notes
+        -----
+        File rows and job attempts remain available for history. An interrupted
+        cleanup can retry the same unlink in the next transaction.
+        """
+        with self.connect() as db:
+            sessions = db.execute(
+                "SELECT s.id FROM browser_sessions s WHERE (s.closed OR s.expires_at <= now()) "
+                "AND EXISTS (SELECT 1 FROM assets a WHERE a.browser_session_id = s.id AND NOT a.cleared) "
+                "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.browser_session_id = s.id "
+                "AND j.state IN ('queued', 'running')) FOR UPDATE OF s SKIP LOCKED LIMIT 32"
+            ).fetchall()
+            if not sessions:
+                return
+            rows = db.execute(
+                "SELECT a.id FROM assets a WHERE NOT a.cleared AND a.browser_session_id = ANY(%s) "
+                "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.browser_session_id = a.browser_session_id "
+                "AND j.state IN ('queued', 'running')) LIMIT 100",
+                ([session["id"] for session in sessions],),
+            ).fetchall()
+            for row in rows:
+                (self.settings.data_dir / "assets" / str(row["id"])).unlink(
+                    missing_ok=True
+                )
+                db.execute(
+                    "UPDATE assets SET cleared = true WHERE id = %s", (row["id"],)
+                )

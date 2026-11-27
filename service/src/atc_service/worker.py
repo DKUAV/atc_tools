@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
+from stat import S_ISREG
 from time import monotonic, sleep
+from typing import BinaryIO
 from uuid import uuid4
 
 import docker
@@ -18,6 +21,7 @@ from docker.types import LogConfig, Mount, Ulimit
 
 from atc_service.config import Settings
 from atc_service.store import FileRecord, ResourceError, Row, Store
+from atc_service.workflows import DATASET_EXTENSIONS, planned_stages
 
 LOG = logging.getLogger("atc_service.worker")
 
@@ -124,6 +128,191 @@ def _publish(settings: Settings, job: Row, output: Path) -> list[FileRecord]:
     return records
 
 
+def _open_output(path: Path) -> BinaryIO:
+    """Open a regular top-level artifact without following symlinks or FIFOs.
+
+    Parameters
+    ----------
+    path
+        Service-selected filename inside the attempt output directory.
+
+    Returns
+    -------
+    BinaryIO
+        Open descriptor for the checked file.
+
+    Raises
+    ------
+    ValueError
+        The output is not a regular file.
+    """
+    descriptor = os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW") | getattr(os, "O_NONBLOCK")
+    )
+    try:
+        if not S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("Workflow output must be a regular file.")
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _sync_workflow(
+    settings: Settings,
+    store: Store,
+    job: Row,
+    output: Path,
+    stages: dict[str, str],
+    published: dict[str, int],
+) -> None:
+    """Copy each allowed artifact as soon as its stage durably succeeds.
+
+    Parameters
+    ----------
+    settings
+        Output bounds and persistent storage root.
+    store
+        Job and asset database.
+    job
+        Active workflow attempt.
+    output
+        Per-attempt output directory.
+    stages
+        Previously stored stage states, updated in place.
+    published
+        Bytes already registered per filename, updated in place.
+    """
+    try:
+        with _open_output(output / "progress.json") as stream:
+            data = stream.read(4097)
+    except FileNotFoundError:
+        return
+    if len(data) > 4096:
+        raise ValueError("Workflow progress snapshot is too large.")
+    state = json.loads(data)
+    allowed = set(planned_stages(job["workflow"]))
+    if not isinstance(state, dict) or any(
+        stage not in allowed
+        or status not in ("running", "succeeded", "failed", "skipped")
+        for stage, status in state.items()
+    ):
+        raise ValueError("Invalid workflow progress snapshot.")
+    for stage, status in stages.items():
+        if status in {"succeeded", "failed", "skipped"}:
+            state[stage] = status
+    if state == stages:
+        return
+
+    name, kind = (
+        ("model.simulated", "simulated_om") if job["simulated"] else ("model.om", "om")
+    )
+    bundles = {
+        "compile": {name: kind, "build.json": "build_info"},
+        "compare": {"accuracy.json": "accuracy"},
+        "profile": {"profiling.zip": "profiling"},
+    }
+    awaiting = [
+        stage
+        for stage in bundles
+        if state.get(stage) == "succeeded" and stages.get(stage) != "succeeded"
+    ]
+    for stage in awaiting:
+        state[stage] = "running"
+    for stage in awaiting:
+        state[stage] = "succeeded"
+        try:
+            files = _publish_bundle(
+                settings,
+                store,
+                job,
+                output,
+                state,
+                bundles[stage],
+                settings.max_output_bytes - sum(published.values()),
+            )
+        except (OSError, ValueError) as error:
+            if stage == "compile":
+                raise
+            state[stage] = "failed"
+            LOG.warning(
+                "job_id=%s stage=%s event=output_not_published error=%s",
+                job["id"],
+                stage,
+                error,
+            )
+        else:
+            stages.update(state)
+            published.update({record.filename: record.size for record in files})
+    if state != stages:
+        store.publish_progress(job, state, [])
+        stages.update(state)
+
+
+def _publish_bundle(
+    settings: Settings,
+    store: Store,
+    job: Row,
+    output: Path,
+    state: dict[str, str],
+    bundle: dict[str, str],
+    remaining: int,
+) -> list[FileRecord]:
+    """Copy and register all artifacts belonging to one completed stage.
+
+    Parameters
+    ----------
+    settings
+        Service asset storage path.
+    store
+        Database used to register the artifact bundle.
+    job
+        Active workflow attempt.
+    output
+        Executor's isolated output directory.
+    state
+        Current stage states conditional on publication.
+    bundle
+        Allowlisted filenames and asset kinds belonging to the stage.
+    remaining
+        Total artifact byte budget left for the job.
+
+    Returns
+    -------
+    list[FileRecord]
+        Newly published artifacts.
+    """
+    records = []
+    paths = []
+    try:
+        for name, kind in bundle.items():
+            identifier = uuid4()
+            destination = settings.data_dir / "assets" / str(identifier)
+            paths.append(destination)
+            size = 0
+            digest = sha256()
+            with (
+                _open_output(output / name) as source,
+                destination.open("xb") as target,
+            ):
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    size += len(chunk)
+                    if size > remaining:
+                        raise ValueError("Workflow artifacts exceed the output limit.")
+                    digest.update(chunk)
+                    target.write(chunk)
+            if size == 0:
+                raise ValueError("Workflow returned an empty artifact.")
+            records.append(FileRecord(identifier, kind, name, size, digest.hexdigest()))
+            remaining -= size
+        store.publish_progress(job, state, records)
+    except (OSError, ValueError):
+        for path in paths:
+            path.unlink(missing_ok=True)
+        raise
+    return records
+
+
 def _recover(settings: Settings, store: Store, client: docker.DockerClient) -> None:
     """Stop interrupted attempts and mark them terminal before accepting work.
 
@@ -138,13 +327,14 @@ def _recover(settings: Settings, store: Store, client: docker.DockerClient) -> N
     """
     for job in store.running():
         attempt = job["attempt_id"]
+        directory = settings.data_dir / "runs" / str(attempt)
         try:
             container = client.containers.get(f"atc-attempt-{attempt.hex}")
         except NotFound:
             pass
         else:
             container.stop(timeout=5)
-            path = settings.data_dir / "runs" / str(attempt) / "task.log"
+            path = directory / "task.log"
             if path.parent.is_dir():
                 recovery_log = path.with_name("task.recovery")
                 _capture(container, recovery_log, settings.max_log_bytes)
@@ -159,6 +349,8 @@ def _recover(settings: Settings, store: Store, client: docker.DockerClient) -> N
         store.finish(
             job, None, "Worker was interrupted. Submit the operation again.", []
         )
+        shutil.rmtree(directory / "input", ignore_errors=True)
+        shutil.rmtree(directory / "output", ignore_errors=True)
         LOG.warning("job_id=%s attempt_id=%s event=recovered", job["id"], attempt)
 
 
@@ -190,6 +382,8 @@ def _execute(
     records: list[FileRecord] = []
     exit_code = None
     container = None
+    stages: dict[str, str] = {}
+    published: dict[str, int] = {}
     LOG.info("job_id=%s attempt_id=%s event=started", job["id"], attempt)
     try:
         directory.mkdir(mode=0o700, parents=True)
@@ -200,6 +394,27 @@ def _execute(
         shutil.copyfile(
             settings.data_dir / "assets" / str(job["input_id"]), inputs / "model.onnx"
         )
+        workflow = job["workflow"]
+        if workflow is not None:
+            sources = store.dataset_sources(job)
+            if sources:
+                dataset = inputs / "dataset"
+                dataset.mkdir()
+                for asset_id, source_name in sources.items():
+                    suffix = Path(source_name).suffix.lower()
+                    if suffix not in DATASET_EXTENSIONS:
+                        raise ValueError("Invalid dataset file type.")
+                    shutil.copyfile(
+                        settings.data_dir / "assets" / asset_id,
+                        dataset / (asset_id + suffix),
+                    )
+        use_npu = bool(
+            workflow
+            and not job["simulated"]
+            and (workflow["compare"] or workflow["profile"])
+        )
+        if use_npu and settings.ascend_device is None:
+            raise ValueError("The 910B2 runtime device is unavailable.")
         (inputs / "request.json").write_text(
             json.dumps(
                 {
@@ -207,6 +422,8 @@ def _execute(
                     "operation": job["operation"],
                     "preset": job["preset"],
                     "simulated": job["simulated"],
+                    "workflow": workflow,
+                    "limit_bytes": settings.max_output_bytes,
                 }
             ),
             encoding="utf-8",
@@ -225,7 +442,14 @@ def _execute(
                 "PYTHONUNBUFFERED": "1",
                 "OMP_NUM_THREADS": "1",
                 "OPENBLAS_NUM_THREADS": "1",
+                "OPENCV_IO_MAX_IMAGE_PIXELS": "16777216",
+                **(
+                    {"ASCEND_VISIBLE_DEVICES": str(settings.ascend_device)}
+                    if use_npu
+                    else {}
+                ),
             },
+            runtime="ascend" if use_npu else None,
             user="10001:10001",
             network_disabled=True,
             read_only=True,
@@ -256,6 +480,8 @@ def _execute(
             try:
                 while True:
                     container.reload()
+                    if workflow is not None:
+                        _sync_workflow(settings, store, job, output, stages, published)
                     if container.status in ("exited", "dead"):
                         exit_code = int(container.attrs["State"]["ExitCode"])
                         if container.attrs["State"].get("OOMKilled"):
@@ -282,9 +508,17 @@ def _execute(
                 _capture(container, log_path, settings.max_log_bytes)
         if error is None:
             if exit_code == 0:
-                records = _publish(settings, job, output)
+                if workflow is None:
+                    records = _publish(settings, job, output)
+                elif stages.get("compile") != "succeeded" or any(
+                    stages.get(stage) not in ("succeeded", "failed", "skipped")
+                    for stage in planned_stages(workflow)
+                ):
+                    raise ValueError("Workflow exited without a complete stage result.")
             else:
                 error = f"Execution exited with status {exit_code}. See the task log."
+    except ResourceError as failure:
+        error = str(failure)
     except (DockerException, OSError, ValueError):
         LOG.exception(
             "job_id=%s attempt_id=%s event=execution_error", job["id"], attempt
@@ -295,11 +529,11 @@ def _execute(
             # A removal failure leaves the attempt running so recovery can confirm exit.
             container.remove(force=True)
     try:
-        published = store.finish(job, exit_code, error, records)
+        accepted = store.finish(job, exit_code, error, records)
     except ResourceError as failure:
-        published = False
+        accepted = False
         store.finish(job, exit_code, str(failure), [])
-    if not published:
+    if not accepted:
         for record in records:
             (settings.data_dir / "assets" / str(record.id)).unlink(missing_ok=True)
     shutil.rmtree(inputs, ignore_errors=True)
@@ -336,8 +570,15 @@ def run_worker(settings: Settings) -> None:
         if locked is None or not locked["locked"]:
             raise RuntimeError("Another worker is already active.")
         _recover(settings, store, client)
+        cleanup_due = monotonic()
         while True:
             lease.execute("SELECT 1")
+            if monotonic() >= cleanup_due:
+                cleanup_due = monotonic() + 5
+                try:
+                    store.clear_browser_files()
+                except OSError:
+                    LOG.exception("event=browser_cleanup_failed")
             job = store.claim()
             if job is None:
                 sleep(0.25)
