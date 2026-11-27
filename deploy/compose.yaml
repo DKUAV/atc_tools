@@ -1,0 +1,66 @@
+name: atc-tools
+
+x-service: &service
+  image: atc-service:local
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.service
+  environment:
+    ATC_DATABASE_URL: postgresql://atc:${ATC_DB_PASSWORD:?Set a URL-safe database password}@postgres:5432/atc
+    ATC_DOCKER_DATA_DIR: ${ATC_DOCKER_DATA_DIR:-${ATC_HOST_DATA_DIR:-/srv/atc-tools}}
+    ATC_INSPECT_IMAGE: ${ATC_INSPECT_IMAGE:-atc-executor:local}
+    ATC_COMPILE_IMAGE: ${ATC_COMPILE_IMAGE:-}
+    ATC_SIMULATE_COMPILE: ${ATC_SIMULATE_COMPILE:-0}
+    ATC_MAX_UPLOAD_BYTES: ${ATC_MAX_UPLOAD_BYTES:-536870912}
+    ATC_MAX_LOG_BYTES: ${ATC_MAX_LOG_BYTES:-4194304}
+    ATC_MAX_OUTPUT_BYTES: ${ATC_MAX_OUTPUT_BYTES:-1073741824}
+    ATC_MAX_ACCOUNT_BYTES: ${ATC_MAX_ACCOUNT_BYTES:-4294967296}
+    ATC_TIMEOUT_SECONDS: ${ATC_TIMEOUT_SECONDS:-900}
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:17@sha256:97fb53376be3e4fb1a8a61421daa69dcc3bf2fa39bda3259f5245f9a455af1a9
+    environment:
+      POSTGRES_USER: atc
+      POSTGRES_PASSWORD: ${ATC_DB_PASSWORD:?Set a URL-safe database password}
+      POSTGRES_DB: atc
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "atc", "-d", "atc"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  api:
+    <<: *service
+    command: ["api"]
+    ports:
+      - "${ATC_API_BIND:-127.0.0.1}:${ATC_API_PORT:-8766}:8080"
+    volumes:
+      - &service-data
+        type: bind
+        source: ${ATC_HOST_DATA_DIR:-/srv/atc-tools}
+        target: /data
+    restart: unless-stopped
+
+  worker:
+    <<: *service
+    command: ["worker"]
+    volumes:
+      - *service-data
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  executor:
+    profiles: ["build"]
+    image: atc-executor:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.executor
+
+volumes:
+  postgres-data:

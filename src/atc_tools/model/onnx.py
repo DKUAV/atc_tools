@@ -22,22 +22,35 @@ from atc_tools.model.tensor_io import (
 )
 
 
-def external_locations(message: Message) -> Iterator[str]:
+def external_locations(
+    message: Message, *, require_embedded: bool = False
+) -> Iterator[str]:
     """Yield external tensor locations from the model and its nested messages.
 
     Parameters
     ----------
     message
         ONNX graph or a nested protobuf message.
+    require_embedded
+        Reject any tensor marked as external before using its location.
 
     Yields
     ------
     str
         The location string recorded in an external tensor.
+
+    Raises
+    ------
+    ValueError
+        An external tensor was declared when embedded weights are required.
     """
     if isinstance(
         message, onnx.TensorProto
     ) and onnx.external_data_helper.uses_external_data(message):
+        if require_embedded:
+            raise ValueError(
+                "Upload a self-contained ONNX model with embedded weights."
+            )
         for entry in message.external_data:
             if entry.key == "location":
                 yield entry.value
@@ -45,26 +58,35 @@ def external_locations(message: Message) -> Iterator[str]:
         if field.message_type is None:
             continue
         if isinstance(value, Message):
-            yield from external_locations(value)
+            yield from external_locations(value, require_embedded=require_embedded)
         else:
             for child in value:
-                yield from external_locations(child)
+                yield from external_locations(child, require_embedded=require_embedded)
 
 
-def inspect_onnx(path: Path) -> dict[str, Any]:
+def inspect_onnx(path: Path, *, require_embedded: bool = False) -> dict[str, Any]:
     """Read graph metadata without loading weights or initializing ONNX Runtime.
 
     Parameters
     ----------
     path
         ONNX model path, used to resolve external tensor locations.
+    require_embedded
+        Require a graph with embedded weights and skip external filesystem access.
 
     Returns
     -------
     dict[str, Any]
         JSON-compatible graph and external weight metadata.
+
+    Raises
+    ------
+    ValueError
+        An uploaded model lacks a graph or declares external weights.
     """
     model = onnx.load_model(path, load_external_data=False)
+    if require_embedded and (not model.HasField("graph") or model.ir_version <= 0):
+        raise ValueError("The file does not contain an ONNX model graph.")
     initializers = {tensor.name for tensor in model.graph.initializer}
     initializers.update(tensor.values.name for tensor in model.graph.sparse_initializer)
 
@@ -102,7 +124,9 @@ def inspect_onnx(path: Path) -> dict[str, Any]:
             "shape": shape,
         }
 
-    locations = sorted(set(external_locations(model)))
+    locations = sorted(
+        set(external_locations(model, require_embedded=require_embedded))
+    )
     return {
         "opsets": {
             opset.domain or "ai.onnx": opset.version for opset in model.opset_import
