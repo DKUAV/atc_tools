@@ -10,24 +10,24 @@
 - Shell 入口用 Bash 和增强版 util-linux `getopt`。Bash 或 Zsh 终端都运行 `bash scripts/xxx.sh`。所有 Shell 入口都支持 `-h` 和 `--help`。支持 `--cann-env` 的入口可通过该参数加载对应的 `set_env.sh`。
 - Python 工具需要 Python 3.10 或更高版本。直接输入 JPG 或 PNG 及运行 YOLO 示例需要 OpenCV。执行 OM 推理时，使用与板端 CANN 和 Python ABI 配套的厂商 pyACL 或 `ais_bench`。准备 wheel 时使用与目标 Linux 架构和 Python 版本一致的联网环境。AMCT 使用其自身的依赖配套表。
 
-在联网的开发环境可用 `uv sync --extra prepare --extra yolo` 以 editable 模式安装。下面的命令可在与离线使用环境同架构、同 Python 版本的联网机器上准备 wheelhouse，包括 editable 构建所需的 Hatchling 和 Hatch VCS。
+在联网的开发环境可用 `uv sync` 以 editable 模式安装。下面的命令可在与离线使用环境同架构、同 Python 版本的联网机器上准备 wheelhouse，包括 editable 构建所需的 Hatchling 和 Hatch VCS。
 
 ```bash
 mkdir -p work
-uv export --extra prepare --extra yolo --no-dev --no-emit-project \
+uv export --no-dev --no-emit-project \
   --format requirements-txt --output-file work/requirements-tools.txt
 python3 -m pip download --only-binary=:all: -r work/requirements-tools.txt -d work/wheelhouse
 python3 -m pip download --only-binary=:all: hatchling hatch-vcs -d work/wheelhouse
 ```
 
-将仓库和 wheelhouse 复制到目标环境后，从仓库根目录安装所需功能。
+将仓库和 wheelhouse 复制到目标环境后，从仓库根目录安装。
 
 ```bash
-python3 -m pip install --no-index --find-links work/wheelhouse -e '.[prepare,yolo]'
+python3 -m pip install --no-index --find-links work/wheelhouse -e .
 atc_tools --version
 ```
 
-安装时根据 Git 标签和提交生成包版本。离线复制工作区时可保留 `.git`，或使用构建好的源码发行包来保留版本。直接从普通源码目录安装时，若版本元数据缺失，则使用 `0.0.0`。仅使用 NPY 或 BIN 执行 OM 推理时，安装基础包即可，再准备所选推理后端。
+安装时根据 Git 标签和提交生成包版本。离线复制工作区时可保留 `.git`，或使用构建好的源码发行包来保留版本。直接从普通源码目录安装时，若版本元数据缺失，则使用 `0.0.0`。执行 OM 推理时，另行安装所选推理后端。
 
 打包前可为交付目录生成校验清单，在目标机用 `sha256sum -c SHA256SUMS` 检查传输结果。例如在待传输目录中执行下列命令。
 
@@ -59,7 +59,7 @@ atc_tools onnx reference --model work/model.onnx \
 | --- | --- |
 | `.npy` | 预处理后的 NumPy 张量，shape 和 dtype 必须与模型一致。 |
 | `.bin` | 预处理后的原始张量字节，按 C 顺序排列，使用模型的 dtype 和运行环境的字节序。文件大小必须等于元素数乘以每个元素的字节数，例如可用 `array.tofile("input.bin")` 生成。 |
-| `.jpg`、`.jpeg`、`.png` | 适用于 NCHW 或 NHWC 布局明确的固定 shape 单张 RGB 输入。等比缩放到模型输入大小并用 114 居中填充，浮点输入除以 255，`uint8` 保留像素整数值。使用 `yolo` 可选依赖中的 `opencv-python-headless`，离线环境请带上对应 wheel。 |
+| `.jpg`、`.jpeg`、`.png` | 适用于 NCHW 或 NHWC 布局明确的固定 shape 单张 RGB 输入。等比缩放到模型输入大小并用 114 居中填充，浮点输入除以 255，`uint8` 保留像素整数值。默认安装包含所需的 `opencv-python-headless`。 |
 
 模型需要其他图片前处理时，先生成 NPY 或 BIN。参考输出目录包含 `output_0.npy` 等文件和记录名称、shape、dtype 的 `outputs.json`。
 
@@ -119,7 +119,7 @@ source /path/to/amct-venv/bin/activate
 bash scripts/install_amct.sh 9.2.0
 ```
 
-目标机需预装同版本 CANN Toolkit、C++ 编译器和 Python 开发头文件，并以有权安装 Toolkit 组件的用户执行。先在所选 Python 环境中准备 pip、setuptools 和配套依赖。Python 3.10/3.11 可用 `onnx==1.14.0`、`onnxruntime==1.16.0`、`numpy==1.24.4`、`protobuf==3.20.3`。Python 3.12 可用 `onnx==1.18.0`、`onnxruntime==1.20.0`、`numpy>=2.0.0`、`protobuf==3.20.3`。离线环境可按前面的 wheelhouse 流程准备这些依赖。 [华为 AMCT（ONNX）配套表](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/920beta2/devaids/amct/atlasamct_16_0014.html)
+目标机需预装同版本 CANN Toolkit、C++ 编译器和 Python 开发头文件，并以有权安装 Toolkit 组件的用户执行。先在独立的 AMCT Python 环境中准备 pip、setuptools 和配套依赖。Python 3.10/3.11 可用 `onnx==1.14.0`、`onnxruntime==1.16.0`、`numpy==1.24.4`、`protobuf==3.20.3`。Python 3.12 可用 `onnx==1.18.0`、`onnxruntime==1.20.0`、`numpy>=2.0.0`、`protobuf==3.20.3`。离线环境可用 `pip download` 为 AMCT 环境另备对应版本的 wheel。 [华为 AMCT（ONNX）配套表](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/920beta2/devaids/amct/atlasamct_16_0014.html)
 
 安装脚本从仓库的 `work/amct/<版本>/` 按目标机架构选包，在当前 Python 环境安装 ONNX wheel 并编译自定义算子，再把 ACL 装到已加载的 Toolkit 安装位置。整个安装步骤可离线执行。 [华为 AMCT 安装指南](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/910/devaids/amct/atlasamct_16_0025.html)
 
@@ -129,7 +129,7 @@ bash scripts/install_amct.sh 9.2.0
 
 优先在联网环境装好并验证 `amct_onnx calibration --help`，以及一次实际校准。若需离线重做校准，带上已验证的 AMCT 环境。自定义算子库需要与 ONNX Runtime 版本配套，提前完成安装和测试。
 
-校准数据应代表业务场景。每个校准 batch 建一个目录，按 ONNX 的输入顺序放 `input_0.npy`、`input_1.npy` 等。同一个输入在所有 batch 中保持 dtype、shape 和预处理一致。另留独立的验证集。
+校准数据应代表业务场景。每个校准 batch 建一个目录，按 ONNX 的输入顺序放 `input_0.npy`、`input_1.npy` 等。同一个输入在所有 batch 中保持 dtype、shape 和预处理一致。另留独立的验证集。在安装了 `atc_tools` 的环境中准备校准数据。
 
 ```bash
 atc_tools onnx calibration --model work/model.onnx \
@@ -137,7 +137,7 @@ atc_tools onnx calibration --model work/model.onnx \
 cp configs/amct-onnx.cfg work/amct-onnx.cfg
 ```
 
-将 `work/amct-onnx.cfg` 中的 `batch_num` 按要参与校准的 batch 数填写。敏感层可在配置中增加 `skip_layers: "实际节点名"`。如需换校准算法或对单层覆盖策略，按所用 AMCT 的 `calibration_config_onnx.proto` 扩展该配置，保留最终使用的文件和量化日志。
+将 `work/amct-onnx.cfg` 中的 `batch_num` 按要参与校准的 batch 数填写。敏感层可在配置中增加 `skip_layers: "实际节点名"`。如需换校准算法或对单层覆盖策略，按所用 AMCT 的 `calibration_config_onnx.proto` 扩展该配置，保留最终使用的文件和量化日志。然后激活 AMCT 环境执行量化。
 
 ```bash
 bash scripts/quantize_model.sh --model work/model.onnx \

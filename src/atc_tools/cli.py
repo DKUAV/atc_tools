@@ -33,7 +33,7 @@ def _add_onnx_commands(parser: argparse.ArgumentParser) -> None:
     parser
         Parser for the ONNX command group.
     """
-    parser.set_defaults(handler_module="atc_tools.model.onnx", extra="prepare")
+    parser.set_defaults(handler_module="atc_tools.model.onnx")
     commands = parser.add_subparsers(dest="command", required=True)
     inspect = commands.add_parser("inspect", help="Show ONNX input and output details")
     reference = commands.add_parser("reference", help="Generate CPU reference outputs")
@@ -55,7 +55,6 @@ def _add_onnx_commands(parser: argparse.ArgumentParser) -> None:
     quantize.set_defaults(
         command_parser=quantize,
         handler_module="atc_tools.model.quantize",
-        extra="prepare,yolo",
     )
     quantize.add_argument(
         "--model", required=True, type=Path, help="Floating-point ONNX"
@@ -120,7 +119,7 @@ def _add_yolo_commands(parser: argparse.ArgumentParser) -> None:
     parser
         Parser for the YOLO command group.
     """
-    parser.set_defaults(handler_module="atc_tools.detection.yolo", extra="yolo")
+    parser.set_defaults(handler_module="atc_tools.detection.yolo")
     commands = parser.add_subparsers(dest="command", required=True)
     preprocess = commands.add_parser(
         "preprocess", help="Write a normalized RGB NCHW tensor"
@@ -174,7 +173,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="atc_tools", description="Model preparation and inference for Ascend CANN."
     )
-    parser.set_defaults(extra=None)
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {version('atc_tools')}"
     )
@@ -192,8 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         handler = import_module(args.handler_module)
     except (ImportError, OSError) as error:
-        hint = f" Install the {args.extra!r} extra." if args.extra else ""
-        command_parser.exit(1, f"Cannot load {command_parser.prog}: {error}.{hint}\n")
+        command_parser.exit(1, f"Cannot load {command_parser.prog}: {error}.\n")
     status: int | None = handler.run_command(args, command_parser)
     return 0 if status is None else status
 

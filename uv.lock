@@ -16,22 +16,15 @@ dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
-
-[package.optional-dependencies]
-prepare = [
     { name = "onnx" },
     { name = "onnxruntime", version = "1.24.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "onnxruntime", version = "1.32.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "protobuf" },
-]
-yolo = [
     { name = "opencv-python-headless" },
+    { name = "protobuf" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "atc-tools", extra = ["prepare", "yolo"] },
     { name = "ruff" },
     { name = "ty" },
 ]
@@ -39,16 +32,14 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=1.24" },
-    { name = "onnx", marker = "extra == 'prepare'", specifier = ">=1.16" },
-    { name = "onnxruntime", marker = "extra == 'prepare'", specifier = ">=1.16" },
-    { name = "opencv-python-headless", marker = "extra == 'yolo'", specifier = ">=4.8" },
-    { name = "protobuf", marker = "extra == 'prepare'" },
+    { name = "onnx", specifier = ">=1.16" },
+    { name = "onnxruntime", specifier = ">=1.16" },
+    { name = "opencv-python-headless", specifier = ">=4.8" },
+    { name = "protobuf" },
 ]
-provides-extras = ["prepare", "yolo"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "atc-tools", extras = ["prepare", "yolo"] },
     { name = "ruff", specifier = ">=0.17.1" },
     { name = "ty", specifier = ">=0.0.89" },
 ]

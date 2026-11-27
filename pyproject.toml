@@ -4,11 +4,13 @@ dynamic = ["version"]
 description = "Offline model preparation and inference tools for Ascend CANN"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24"]
-
-[project.optional-dependencies]
-prepare = ["onnx>=1.16", "onnxruntime>=1.16", "protobuf"]
-yolo = ["opencv-python-headless>=4.8"]
+dependencies = [
+    "numpy>=1.24",
+    "onnx>=1.16",
+    "onnxruntime>=1.16",
+    "opencv-python-headless>=4.8",
+    "protobuf",
+]
 
 [project.scripts]
 atc_tools = "atc_tools.cli:main"
@@ -27,7 +29,6 @@ raw-options = { local_scheme = "no-local-version" }
 
 [dependency-groups]
 dev = [
-    "atc_tools[prepare,yolo]",
     "ruff>=0.17.1",
     "ty>=0.0.89",
 ]
