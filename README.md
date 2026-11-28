@@ -36,6 +36,8 @@ python3 -m pip install -e '.[service]'
 atc_service --help
 ```
 
+服务启动、Web 工作台和 API 的使用方法见[服务使用指南](docs/service-guide.zh.md)。
+
 #### 安装 AMCT
 
 量化需要 AMCT，CANN 默认不带 AMCT，如果缺少 AMCT，可以使用
