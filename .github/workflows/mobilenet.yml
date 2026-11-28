@@ -2,6 +2,15 @@ name: MobileNetV2 Ascend compilation
 
 on:
   workflow_dispatch:
+    inputs:
+      checks:
+        description: Checks to run
+        type: choice
+        default: all
+        options:
+          - all
+          - compile
+          - offline
 
 permissions:
   contents: read
@@ -14,8 +23,9 @@ env:
 jobs:
   compile:
     name: Compile MobileNetV2 through the API
+    if: inputs.checks != 'offline'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -35,10 +45,11 @@ jobs:
         run: |
           docker build --platform linux/arm64 --file deploy/Dockerfile.ascend-executor \
             --build-arg "ASCEND_ATC_IMAGE=$ASCEND_ATC_IMAGE" --tag atc-executor:ci-ascend .
-      - name: Compile for 310B4 and 910B2
+      - name: Compile original and INT8 OM for 310B4 and 910B2
         env:
           ATC_COMPILE_IMAGE: atc-executor:ci-ascend
           ATC_COMPILE_910B2_IMAGE: atc-executor:ci-ascend
+          ATC_AMCT_TARGETS: 310B4,910B2
           ATC_MEMORY_BYTES: '8589934592'
         run: |
           uv sync --locked --no-dev
@@ -50,3 +61,54 @@ jobs:
           path: ${{ runner.temp }}/mobilenet-logs
           if-no-files-found: ignore
           retention-days: 7
+
+  offline:
+    name: Pack, load, and start the simulator bundle
+    if: inputs.checks != 'compile'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build and pack the images
+        run: |
+          set -u
+          export ATC_DB_PASSWORD
+          ATC_DB_PASSWORD=$(openssl rand -hex 24)
+          echo "::add-mask::$ATC_DB_PASSWORD"
+          compose=(docker compose -f deploy/compose.yaml)
+          "${compose[@]}" --profile build build api executor
+          "${compose[@]}" pull postgres
+          bash deploy/pack-offline.sh "$RUNNER_TEMP/atc-offline-bundle"
+      - name: Verify, import, and start without pulling
+        working-directory: ${{ runner.temp }}/atc-offline-bundle
+        run: |
+          set -u
+          sha256sum -c SHA256SUMS
+          mapfile -t images < <(cut -f1 images.txt)
+          docker image rm "${images[@]}"
+          docker image load -i images.tar
+          while IFS=$'\t' read -r image expected; do
+            actual=$(docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$image")
+            [[ $actual == "$expected" && $actual == *' linux/arm64' ]]
+          done < images.txt
+
+          cp lab.env.example lab.env
+          export ATC_DB_PASSWORD ATC_HOST_DATA_DIR ATC_SIMULATE_COMPILE=1
+          ATC_DB_PASSWORD=$(openssl rand -hex 24)
+          ATC_HOST_DATA_DIR=$(mktemp -d "$RUNNER_TEMP/atc-offline-data.XXXXXXXX")
+          echo "::add-mask::$ATC_DB_PASSWORD"
+          compose=(docker compose -p atc-offline-ci --env-file lab.env -f compose.yaml)
+          cleanup() {
+            local status=$?
+            if (( status != 0 )); then
+              "${compose[@]}" logs --no-color >&2 || true
+            fi
+            "${compose[@]}" down --volumes || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          "${compose[@]}" up -d --no-build --pull never --wait --wait-timeout 90
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 1 \
+            --max-time 5 http://127.0.0.1:8766/readyz

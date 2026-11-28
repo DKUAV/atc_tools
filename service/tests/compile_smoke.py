@@ -1,12 +1,15 @@
-"""Compile a fixed MobileNetV2 input for both Ascend targets through the API."""
+"""Compile MobileNetV2 with original precision and INT8 through the API."""
 
 import argparse
 import json
 import os
 from hashlib import sha256
+from io import BytesIO
+from itertools import product
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from smoke import await_job, request
 
 
@@ -88,8 +91,27 @@ def main() -> None:
     finally:
         save_log(token, inspect_job["id"], args.reports / "inspection.log")
 
-    # ATC needs a concrete batch for this model's dynamic batch axis.
-    for target in ("310B4", "910B2"):
+    # Fix the model's dynamic batch axis and generate repeatable calibration inputs.
+    shape = (1, 3, 224, 224)
+    rng = np.random.default_rng(42)
+    calibration = []
+    for index in range(4):
+        sample = BytesIO()
+        np.save(sample, rng.standard_normal(shape, dtype=np.float32))
+        asset = json.loads(
+            request(
+                token,
+                f"/v1/dataset-files?filename=calibration-{index}.npy",
+                data=sample.getvalue(),
+                media_type="application/octet-stream",
+                status=201,
+            )
+        )
+        calibration.append([asset["id"]])
+
+    for precision, target in product(("origin", "int8"), ("310B4", "910B2")):
+        preset = f"{target.lower()}-{precision}"
+        samples = calibration if precision == "int8" else []
         job = json.loads(
             request(
                 token,
@@ -97,8 +119,9 @@ def main() -> None:
                 data=json.dumps(
                     {
                         "model_id": model_id,
-                        "preset": f"{target.lower()}-origin",
-                        "shapes": {"0": [1, 3, 224, 224]},
+                        "preset": preset,
+                        "shapes": {"0": shape},
+                        "calibration": samples,
                     }
                 ).encode(),
                 status=202,
@@ -107,20 +130,27 @@ def main() -> None:
         try:
             assert not job["simulated"], job
             result = await_job(token, job, "succeeded", timeout=960)
-            assert result["stages"]["compile"] == "succeeded", result
+            stages = result["stages"]
+            assert stages["compile"] == "succeeded", result
+            if precision == "int8":
+                assert (
+                    stages["prepare_calibration"] == stages["quantize"] == "succeeded"
+                ), result
             files = {asset["kind"]: asset for asset in result["outputs"]}
             artifact = download(token, files["om"])
             info = download(token, files["build_info"])
-            (args.reports / f"{target}-build.json").write_bytes(info)
+            (args.reports / f"{preset}-build.json").write_bytes(info)
             build = json.loads(info)
             assert build["target"] == f"Ascend{target}" and not build["simulated"], (
                 build
             )
+            assert build["preset"] == preset, build
+            assert build["calibration_batches"] == len(samples), build
             assert build["model_sha256"] == sha256(artifact).hexdigest(), build
-            assert build["input_shapes"] == {"input": [1, 3, 224, 224]}, build
-            print(f"MobileNetV2 compiled for {target}, OM size {len(artifact)} bytes.")
+            assert build["input_shapes"] == {"input": list(shape)}, build
+            print(f"MobileNetV2 compiled with {preset}, OM size {len(artifact)} bytes.")
         finally:
-            save_log(token, job["id"], args.reports / f"{target}-compile.log")
+            save_log(token, job["id"], args.reports / f"{preset}-compile.log")
 
 
 if __name__ == "__main__":
