@@ -21,11 +21,11 @@ bash scripts/probe_env.sh
 在仓库根目录激活 Python 3.10 或更高版本的虚拟环境后，以 editable 模式安装：
 
 ```bash
-python3 -m pip install -e '.[prepare,yolo]'
+python3 -m pip install -e .
 atc_tools --help
 ```
 
-`prepare` 提供 ONNX 模型检查和 CPU 参考推理依赖，`yolo` 提供直接输入图片以及 YOLO 示例所需的 OpenCV。安装时根据 Git 标签和提交生成包版本。 [依赖配置](pyproject.toml)
+默认安装包含 ONNX 模型检查、CPU 参考推理、直接输入图片和 YOLO 示例所需的 Python 依赖。安装时根据 Git 标签和提交生成包版本。 [依赖配置](pyproject.toml)
 
 Python 命令统一使用 `atc_tools`。`onnx` 用于检查模型、生成 CPU 参考输出和准备校准数据，`om` 用于设备推理和输出对比，`yolo` 用于单图检测。
 
@@ -38,7 +38,7 @@ bash scripts/download_amct.sh <CANN_version>
 ```
 
 下载完成后，将 `work/amct/<CANN_version>/` 目录复制到目标机器的仓库相同路径。
-在目标机器上，激活已准备好依赖的 Python 环境后，执行安装：
+在目标机器上，激活已准备好配套依赖的独立 AMCT Python 环境后，执行安装。 [AMCT 依赖版本](docs/deployment-guide.md#下载和安装-amct)
 
 ```bash
 bash scripts/install_amct.sh <CANN_version>
@@ -153,9 +153,11 @@ bash scripts/compile.sh --model work/model.onnx --soc "$SOC_VERSION" \
 **从图片目录一键量化。** 把 JPG、JPEG 或 PNG 平铺在一个目录中，图片文件名可以自定。命令会从 ONNX 读取输入名、shape 和 dtype，按文件名顺序逐张预处理并调用 AMCT-ONNX。
 
 ```bash
-atc_tools onnx quantize --model work/model.onnx \
+/path/to/atc-tools-venv/bin/atc_tools onnx quantize --model work/model.onnx \
   --dataset work/images --output-dir work/quantized
 ```
+
+将 `/path/to/atc-tools-venv` 换成安装了本工具的虚拟环境路径。`atc_tools` 会从当前 `PATH` 调用 AMCT 环境中的 `amct_onnx`。
 
 适用于固定尺寸、batch 为 1 的单输入 RGB 模型，支持 NCHW 和 NHWC。预处理使用 YOLO 规则，等比缩放并填充 114，转换为 RGB，浮点输入除以 255。模型使用其他预处理时，先自行生成张量，再走下面的流程。
 

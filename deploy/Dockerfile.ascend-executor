@@ -1,0 +1,9 @@
+ARG ASCEND_ATC_IMAGE
+FROM ${ASCEND_ATC_IMAGE}
+COPY src /opt/atc-tools/src
+COPY scripts /opt/atc-tools/scripts
+COPY deploy/ascend-executor.sh /opt/atc-tools/ascend-executor.sh
+ENV PYTHONDONTWRITEBYTECODE=1
+WORKDIR /work/output
+USER 10001:10001
+ENTRYPOINT ["/bin/bash", "/opt/atc-tools/ascend-executor.sh"]
