@@ -64,9 +64,12 @@ jobs:
           ATC_APP_IMAGE: atc-tools:verified
         run: |
           sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
-          base=$(cat deploy/base-image.txt)
-          [[ $base =~ @sha256:[0-9a-f]{64}$ ]]
-          docker build -f deploy/Dockerfile.service --build-arg ASCEND_ATC_IMAGE="$base" --build-arg VCS_REF="$GITHUB_SHA" -t "$ATC_APP_IMAGE" .
+          channel=$(cat deploy/base-image.txt)
+          digest=$(docker buildx imagetools inspect "$channel" --format '{{.Manifest.Digest}}')
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          base="$channel@$digest"
+          printf '%s\n' "$base" > dist/base-image
+          docker build --pull -f deploy/Dockerfile.service --build-arg ASCEND_ATC_IMAGE="$base" --build-arg VCS_REF="$GITHUB_SHA" -t "$ATC_APP_IMAGE" .
           bash scripts/ci/compile-mobilenet.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
@@ -107,7 +110,6 @@ jobs:
           docker tag atc-tools:verified "$image"
           docker push "$image"
           docker image inspect --format '{{index .RepoDigests 0}}' "$image" > dist/image-digest
-          cp deploy/base-image.txt dist/base-image
           echo "$image" > dist/image-tag
           echo "Verified image: $image" >> "$GITHUB_STEP_SUMMARY"
           if [[ $GITHUB_REF_TYPE == tag ]]; then

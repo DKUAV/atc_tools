@@ -18,6 +18,8 @@ Run floating-point and INT8 conversions for both targets. On 910B2 run compariso
 
 ## Offline wheel verification and release
 
+Each application build follows the `ascend-atc` channel in `deploy/base-image.txt`. CI resolves the current channel once and records the exact base used in the application's `ATC_BASE_IMAGE` environment variable and the release receipt's `base-image` file. To deploy an upgrade offline, import the newly tested application image and recreate the container.
+
 Drain active jobs. Verify the candidate wheel's SHA-256 and install it over SSH using `/opt/onnx/bin/python -I -m pip install --no-index --no-deps --force-reinstall ./PACKAGE.whl`. New execution processes load the installed tools. Restart the same container if resident service code changed. Record the original reproducer, result and wheel checksum.
 
 Use the validated candidate's CI run for release. Import the tested application image, update `ATC_APP_IMAGE`, and recreate the container with the same data and SSH mounts. Verify readiness, the original reproducer and a historical download. Retain the source commit, wheel checksums, base digest and final registry digest.

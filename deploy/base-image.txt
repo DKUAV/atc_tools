@@ -1,1 +1,1 @@
-ghcr.io/dkuav/ascend-atc:8.5.0-910b-ubuntu22.04-py3.11-6e40b5712821-46126256318-1@sha256:e8691ce02c7a3eb3ea47f22fd1e620a6a3454e424dee32d6c858a902ba92cc7a
+ghcr.io/dkuav/ascend-atc:8.5.0-910b-ubuntu22.04-py3.11
