@@ -27,6 +27,7 @@ def test_real_workflow_build_and_verify(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     inputs, build, verify = (tmp_path / name for name in ("input", "build", "verify"))
+    source = inputs / "model.onnx"
     for folder in (inputs, inputs / "dataset", build, verify):
         folder.mkdir()
     value = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 2])
@@ -41,7 +42,7 @@ def test_real_workflow_build_and_verify(
         helper.make_model(
             graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=9
         ),
-        inputs / "model.onnx",
+        source,
     )
     np.save(
         inputs / "dataset" / "batch.npy",
@@ -49,6 +50,7 @@ def test_real_workflow_build_and_verify(
         allow_pickle=False,
     )
     commands: list[str] = []
+    deployment: Path | None = None
 
     def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         """Produce the expected vendor artifacts from the fixed command contract.
@@ -65,17 +67,20 @@ def test_real_workflow_build_and_verify(
         subprocess.CompletedProcess
             Successful synthetic exit status.
         """
+        nonlocal deployment
         if command[0] == "bash":
             destination = Path(command[command.index("--output-dir") + 1])
             destination.mkdir()
             if command[1].endswith("quantize_model.sh"):
                 commands.append("quantize")
                 assert "input:1,2" in command and "float32" in command
-                quantized = (inputs / "model.onnx").read_bytes()
-                (destination / "model_deploy_model.onnx").write_bytes(quantized)
+                deployment = destination / "model_deploy_model.onnx"
+                deployment.write_bytes(source.read_bytes())
             else:
                 assert "Ascend910B2" in command
                 is_baseline = "--precision_mode_v2=origin" in command
+                model_path = Path(command[command.index("--model") + 1])
+                assert model_path == (source if is_baseline else deployment)
                 commands.append("baseline" if is_baseline else "compile")
                 (destination / "model.om").write_bytes(
                     b"baseline" if is_baseline else b"int8"
