@@ -79,7 +79,14 @@ class Store:
                 "CREATE TABLE IF NOT EXISTS schema_versions (version integer PRIMARY KEY)"
             )
             for version, filename in enumerate(
-                ("001_initial.sql", "002_browser.sql", "003_workflows.sql"), 1
+                (
+                    "001_initial.sql",
+                    "002_browser.sql",
+                    "003_workflows.sql",
+                    "004_delivery.sql",
+                    "005_stage_times.sql",
+                ),
+                1,
             ):
                 if (
                     db.execute(
@@ -407,18 +414,55 @@ class Store:
                             "Idempotency key already used with different parameters.",
                         )
                     return previous
-            asset = db.execute(
-                "SELECT validated FROM assets WHERE id = %s AND owner = %s AND kind = 'onnx' "
-                "AND NOT cleared AND browser_session_id IS NOT DISTINCT FROM %s",
-                (input_id, owner, session_id),
-            ).fetchone()
-            if asset is None:
-                raise ResourceError(404, "ONNX asset not found.")
-            if operation == "compile_om" and not asset["validated"]:
+            input_kinds = ["onnx", "quantized_onnx"]
+            if operation == "compare_outputs":
+                input_kinds = ["tensors"]
+            elif (
+                operation == "compile_om"
+                and workflow
+                and workflow.get("action")
+                and workflow["precision"] == "int8"
+            ):
+                input_kinds = ["quantized_onnx"]
+            asset = self._require_asset(db, owner, session_id, input_id, input_kinds)
+            if (
+                operation not in {"inspect_onnx", "compare_outputs"}
+                and not asset["validated"]
+            ):
                 raise ResourceError(
-                    409, "Run a successful ONNX inspection before compiling."
+                    409, "Run a successful ONNX inspection before using the model."
                 )
             if workflow is not None:
+                if workflow.get("primary_id"):
+                    kind = "simulated_om" if simulated else "om"
+                    primary = self._require_asset(
+                        db, owner, session_id, UUID(workflow["primary_id"]), [kind]
+                    )
+                    if (
+                        operation in {"run_npu", "profile_om"}
+                        and db.execute(
+                            "SELECT 1 FROM job_outputs o JOIN jobs j ON j.id = o.job_id "
+                            "WHERE o.asset_id = %s AND j.input_id = %s AND "
+                            "(j.workflow->>'target' = '910B2' OR j.preset LIKE '910b2-%%')",
+                            (primary["id"], input_id),
+                        ).fetchone()
+                        is None
+                    ):
+                        raise ResourceError(
+                            422, "Use a 910B2 OM built from the selected model."
+                        )
+                if workflow.get("actual_id"):
+                    self._require_asset(
+                        db, owner, session_id, UUID(workflow["actual_id"]), ["tensors"]
+                    )
+                if workflow.get("baseline_id"):
+                    self._require_asset(
+                        db,
+                        owner,
+                        session_id,
+                        UUID(workflow["baseline_id"]),
+                        ["baseline_om"],
+                    )
                 ids = {
                     UUID(value)
                     for role in ("calibration", "validation")
@@ -428,7 +472,7 @@ class Store:
                 if ids:
                     owned = db.execute(
                         "SELECT count(*) AS total FROM assets WHERE id = ANY(%s) AND owner = %s "
-                        "AND browser_session_id = %s AND kind = 'dataset' AND NOT cleared",
+                        "AND browser_session_id IS NOT DISTINCT FROM %s AND kind = 'dataset' AND NOT cleared",
                         (list(ids), owner, session_id),
                     ).fetchone()
                     if owned is None or owned["total"] != len(ids):
@@ -448,6 +492,47 @@ class Store:
                 session_id,
                 workflow,
             )
+
+    def _require_asset(
+        self,
+        db: psycopg.Connection[Row],
+        owner: str,
+        session_id: UUID | None,
+        asset_id: UUID,
+        kinds: list[str],
+    ) -> Row:
+        """Validate an input asset within the locked submission transaction.
+
+        Parameters
+        ----------
+        db
+            Current transaction.
+        owner, session_id
+            Authorization scope of the request.
+        asset_id, kinds
+            Resource ID and accepted stored kinds.
+
+        Returns
+        -------
+        dict
+            Owned, available input asset.
+
+        Raises
+        ------
+        ResourceError
+            An input does not exist in the requested scope or kind.
+        """
+        asset = db.execute(
+            "SELECT * FROM assets WHERE id = %s AND owner = %s AND kind = ANY(%s) "
+            "AND NOT cleared AND browser_session_id IS NOT DISTINCT FROM %s",
+            (asset_id, owner, kinds, session_id),
+        ).fetchone()
+        if asset is None:
+            raise ResourceError(
+                404,
+                "An input asset is unavailable in this scope or has the wrong kind.",
+            )
+        return asset
 
     def _enqueue(
         self,
@@ -504,10 +589,17 @@ class Store:
         assert pending is not None
         if pending["total"] >= self.settings.max_pending_jobs:
             raise ResourceError(429, "Account pending job limit reached.")
+        lane = "compile"
+        if operation in {"inspect_onnx", "run_cpu", "compare_outputs"}:
+            lane = "cpu"
+        elif operation in {"run_npu", "profile_om", "retry_step"} and not (
+            workflow and workflow.get("build_baseline")
+        ):
+            lane = "device"
         job = db.execute(
             "INSERT INTO jobs (id, owner, operation, input_id, image, preset, simulated, "
-            "idempotency_key, browser_session_id, workflow) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
+            "idempotency_key, browser_session_id, workflow, lane) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
             (
                 uuid4(),
                 owner,
@@ -519,6 +611,7 @@ class Store:
                 key,
                 session_id,
                 Jsonb(workflow) if workflow is not None else None,
+                lane,
             ),
         ).fetchone()
         assert job is not None
@@ -558,7 +651,12 @@ class Store:
             return job, outputs
 
     def publish_progress(
-        self, job: Row, stages: dict[str, str], records: list[FileRecord]
+        self,
+        job: Row,
+        stages: dict[str, str],
+        records: list[FileRecord],
+        summary: Row | None = None,
+        times: Row | None = None,
     ) -> None:
         """Persist stage states and available artifacts for the running attempt.
 
@@ -570,11 +668,23 @@ class Store:
             Validated stage snapshot.
         records
             Artifacts available for immediate download.
+        summary
+            Optional bounded accuracy verdict for the comparison artifact.
+        times
+            Executor timestamps for observed stage transitions.
         """
         with self.connect() as db:
             changed = db.execute(
-                "UPDATE jobs SET stages = %s WHERE id = %s AND attempt_id = %s AND state = 'running'",
-                (Jsonb(stages), job["id"], job["attempt_id"]),
+                "UPDATE jobs SET stages = %s, accuracy_summary = COALESCE(%s, accuracy_summary), "
+                "stage_times = COALESCE(%s, stage_times) "
+                "WHERE id = %s AND attempt_id = %s AND state = 'running'",
+                (
+                    Jsonb(stages),
+                    Jsonb(summary) if summary is not None else None,
+                    Jsonb(times) if times is not None else None,
+                    job["id"],
+                    job["attempt_id"],
+                ),
             )
             if changed.rowcount != 1:
                 raise ResourceError(409, "The workflow attempt is no longer active.")
@@ -631,10 +741,48 @@ class Store:
         with self.connect() as db:
             rows = db.execute(
                 "SELECT id, filename FROM assets WHERE id = ANY(%s) AND owner = %s "
-                "AND browser_session_id = %s AND kind = 'dataset' AND NOT cleared",
+                "AND browser_session_id IS NOT DISTINCT FROM %s AND kind = 'dataset' AND NOT cleared",
                 (list(ids), job["owner"], job["browser_session_id"]),
             ).fetchall()
         return {str(row["id"]): row["filename"] for row in rows}
+
+    def queue_verification(self, job: Row) -> bool:
+        """Release the compile slot and queue verification against the published OM.
+
+        Parameters
+        ----------
+        job
+            Active compile attempt for the workflow.
+
+        Returns
+        -------
+        bool
+            True if the task still needs verification and was not cancelled.
+        """
+        with self.connect() as db:
+            return (
+                db.execute(
+                    "UPDATE jobs SET lane = 'device', state = 'queued' WHERE id = %s AND attempt_id = %s "
+                    "AND lane = 'compile' AND state = 'running' AND NOT cancel_requested",
+                    (job["id"], job["attempt_id"]),
+                ).rowcount
+                == 1
+            )
+
+    def record_worker_status(self, checks: Row) -> None:
+        """Publish the current scheduling coordinator's readiness checks.
+
+        Parameters
+        ----------
+        checks
+            Safe readiness flags for configured executors and runtime.
+        """
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO worker_status (checks) VALUES (%s) ON CONFLICT (singleton) "
+                "DO UPDATE SET checks = EXCLUDED.checks, heartbeat_at = now()",
+                (Jsonb(checks),),
+            )
 
     def cancel(self, owner: str, job_id: UUID) -> Row:
         """Cancel a queued job or request cancellation of a running job.
@@ -672,8 +820,13 @@ class Store:
                 raise ResourceError(404, "Job not found.")
             return row
 
-    def claim(self) -> Row | None:
+    def claim(self, lane: str) -> Row | None:
         """Claim one queued job and register its execution attempt.
+
+        Parameters
+        ----------
+        lane
+            Queue with an available execution slot.
 
         Returns
         -------
@@ -682,8 +835,9 @@ class Store:
         """
         with self.connect() as db:
             job = db.execute(
-                "SELECT id FROM jobs WHERE state = 'queued' "
-                "ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED"
+                "SELECT id FROM jobs WHERE state = 'queued' AND lane = %s "
+                "ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED",
+                (lane,),
             ).fetchone()
             if job is None:
                 return None
@@ -693,7 +847,7 @@ class Store:
                 (attempt, job["id"]),
             )
             return db.execute(
-                "UPDATE jobs SET state = 'running', started_at = now(), attempt_id = %s "
+                "UPDATE jobs SET state = 'running', started_at = COALESCE(started_at, now()), attempt_id = %s "
                 "WHERE id = %s RETURNING *",
                 (attempt, job["id"]),
             ).fetchone()

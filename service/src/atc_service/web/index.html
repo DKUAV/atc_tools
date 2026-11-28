@@ -119,7 +119,13 @@
             <div id="task-detail" class="task-detail" hidden>
               <div class="section-head"><h3 id="task-title">任务详情</h3><button id="cancel" class="quiet" type="button" hidden>取消任务</button></div>
               <p id="task-message" class="help" aria-live="polite" hidden></p>
+              <p id="accuracy-verdict" class="mode-note" hidden></p>
               <div id="results" hidden><h3>输出文件</h3><ul id="downloads" class="downloads"></ul></div>
+              <div id="retry-panel" hidden>
+                <details id="retry-inputs"><summary>更换验证集</summary><div id="retry-dataset"></div></details>
+                <div id="retry-actions" class="picker-actions"></div>
+              </div>
+              <button id="retry-parent" class="quiet" type="button" hidden>返回原转换任务</button>
               <div class="log-card">
                 <h3>执行日志</h3>
                 <pre id="logs" tabindex="0" aria-label="执行日志">等待日志…</pre>

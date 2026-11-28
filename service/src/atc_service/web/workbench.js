@@ -10,10 +10,10 @@ const stateText = {
   idle: "未开始", uploading: "上传中", queued: "排队中", running: "进行中",
   succeeded: "已完成", failed: "失败", cancelled: "已取消", pending: "未开始", skipped: "已跳过",
 };
-const operationText = { inspect_onnx: "模型检查", compile_om: "编译" };
+const operationText = { inspect_onnx: "模型检查", compile_om: "编译", retry_step: "验证重试" };
 const presetText = { "310b4-simulation": "310B4 · 模拟转换", "310b4-float": "310B4 · 浮点编译" };
 const precisionText = { origin: "原始类型", mixed_float16: "Float16 · 自动混合", fp16: "Float16 · 优先 FP16", int8: "INT8 · 默认量化" };
-const stageText = { prepare_calibration: "准备校准数据", quantize: "AMCT INT8 量化", compile: "编译模型",
+const stageText = { prepare_calibration: "准备校准数据", quantize: "AMCT INT8 量化", compile: "编译模型", compile_baseline: "编译浮点基线",
   prepare_validation: "准备验证数据", compare: "精度对比", profile: "msprof 性能采集" };
 const terminal = new Set(["succeeded", "failed", "cancelled"]);
 let session;
@@ -26,6 +26,11 @@ const dataset = {
   calibration: mountDataset($("calibration-set"), "校准集", changed),
   validation: mountDataset($("validation-set"), "验证集", changed),
 };
+const retryDataset = mountDataset($("retry-dataset"), "验证集", () => { if (viewing) viewing.retryKey = undefined; });
+
+function submissionKey() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 function message(value) {
   $("notice").textContent = value;
@@ -76,6 +81,7 @@ function choices() {
 
 function currentPlan(options) {
   const ordered = options.calibration ? ["prepare_calibration", "quantize", "compile"] : ["compile"];
+  if (options.calibration && options.compare) ordered.push("compile_baseline");
   if (options.validation) ordered.push("prepare_validation");
   if (options.compare) ordered.push("compare");
   if (options.profile) ordered.push("profile");
@@ -307,6 +313,78 @@ function showOutputs(job) {
   $("downloads").replaceChildren(...items);
 }
 
+async function uploadSamples(samples, uploaded, activeSession) {
+  const ids = [];
+  for (const sample of samples) {
+    const row = [];
+    for (const file of sample) {
+      if (session !== activeSession) throw new Error("会话已结束，请重新登录。");
+      if (!uploaded.has(file)) {
+        const asset = await api(`/dataset-files?${new URLSearchParams({ filename: file.name })}`, {
+          method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
+        });
+        uploaded.set(file, asset.id);
+      }
+      row.push(uploaded.get(file));
+    }
+    ids.push(row);
+  }
+  return ids;
+}
+
+function showVerification(job, view) {
+  const verdict = $("accuracy-verdict");
+  const summary = job.accuracy_summary;
+  verdict.hidden = !summary;
+  if (summary) {
+    verdict.dataset.result = summary.simulated ? "simulated" : summary.passed ? "passed" : "failed";
+    const label = summary.simulated ? "模拟精度报告" : summary.passed ? "精度对比通过" : "精度对比超出容差";
+    verdict.textContent = `${label} · ${summary.samples} 个样本`;
+  }
+  view.parent = job.parent_job_id;
+  $("retry-parent").hidden = !view.parent;
+  const steps = job.retryable_steps || [];
+  $("retry-panel").hidden = !steps.length;
+  if (!steps.length || view.retrySteps === steps.join(",")) return;
+  view.retrySteps = steps.join(",");
+  const inputs = Array.from({ length: job.validation_input_count }, (_, index) => ({ name: model?.inputs?.[index]?.name || `输入 ${index + 1}` }));
+  retryDataset.show(true, inputs);
+  const actions = steps.map((step) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "quiet";
+    button.textContent = `重试${stageText[step]}`;
+    button.addEventListener("click", async () => {
+      if (busy || view !== viewing || view.retrying) return;
+      view.retrying = true;
+      for (const action of actions) action.disabled = true;
+      message("");
+      const activeSession = session;
+      try {
+        const body = { step };
+        if ($("retry-inputs").open) {
+          const samples = retryDataset.samples(inputs.length, session.max_upload_bytes);
+          body.validation = await uploadSamples(samples, view.retryUploads ??= new Map(), activeSession);
+        }
+        if (viewing !== view || session !== activeSession) return;
+        view.retryKey ??= {};
+        view.retryKey[step] ??= submissionKey();
+        const retried = await api(`/tasks/${job.id}/retry`, {
+          method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": view.retryKey[step] }, body: JSON.stringify(body),
+        });
+        if (viewing === view) watchTask(retried.id, "验证重试", view.filename);
+      } catch (error) {
+        if (viewing === view) message(error.message);
+      } finally {
+        view.retrying = false;
+        for (const action of actions) action.disabled = false;
+      }
+    });
+    return button;
+  });
+  $("retry-actions").replaceChildren(...actions);
+}
+
 async function inspectResult(job, view) {
   const selected = model;
   if (!selected || job.input_id !== selected.id || job.operation !== "inspect_onnx") return;
@@ -359,6 +437,7 @@ async function refreshTask(view) {
     const outputIds = job.outputs.map(({ id }) => id).join(",");
     if (view.outputs !== outputIds) showOutputs(job);
     view.outputs = outputIds;
+    showVerification(job, view);
     await inspectResult(job, view);
     if (viewing !== view) return;
 
@@ -398,6 +477,11 @@ function watchTask(id, label, filename, reuseInspection = false) {
   $("task-detail").hidden = false;
   $("task-message").hidden = true;
   $("results").hidden = true;
+  $("accuracy-verdict").hidden = true;
+  $("retry-panel").hidden = true;
+  $("retry-parent").hidden = true;
+  $("retry-inputs").open = false;
+  retryDataset.clear();
   $("cancel").hidden = true;
   $("logs").textContent = "等待日志…";
   void refreshTask(viewing);
@@ -451,6 +535,9 @@ $("compass").addEventListener("click", (event) => {
   $("compass-note").textContent = open ? "" : "发现隐藏补给。记得喝口水。";
 });
 $("refresh").addEventListener("click", () => loadHistory().catch((error) => message(error.message)));
+$("retry-parent").addEventListener("click", () => {
+  if (viewing?.parent) watchTask(viewing.parent, "转换任务", viewing.filename);
+});
 
 function showConnection() {
   $("connection").hidden = navigator.onLine;
@@ -529,7 +616,7 @@ $("compile-form").addEventListener("submit", async (event) => {
   if ($("start").disabled) return;
   const activeSession = session;
   const preset = $("preset").value;
-  attemptKey ??= Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  attemptKey ??= submissionKey();
   busy = true;
   const selected = model;
   refreshStart();
@@ -539,22 +626,7 @@ $("compile-form").addEventListener("submit", async (event) => {
     const payload = configuration();
     const uploaded = selected.uploaded ??= new Map();
     for (const role of ["calibration", "validation"]) {
-      const ids = [];
-      for (const sample of payload[role]) {
-        const row = [];
-        for (const file of sample) {
-          if (session !== activeSession) return;
-          if (!uploaded.has(file)) {
-            const asset = await api(`/dataset-files?${new URLSearchParams({ filename: file.name })}`, {
-              method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
-            });
-            uploaded.set(file, asset.id);
-          }
-          row.push(uploaded.get(file));
-        }
-        ids.push(row);
-      }
-      payload[role] = ids;
+      payload[role] = await uploadSamples(payload[role], uploaded, activeSession);
     }
     if (session !== activeSession) return;
     const job = await api("/conversions", {

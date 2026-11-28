@@ -6,7 +6,8 @@ import json
 import logging
 import os
 import shutil
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from stat import S_ISREG
@@ -190,7 +191,8 @@ def _sync_workflow(
         return
     if len(data) > 4096:
         raise ValueError("Workflow progress snapshot is too large.")
-    state = json.loads(data)
+    snapshot = json.loads(data)
+    state = snapshot.get("stages", snapshot) if isinstance(snapshot, dict) else snapshot
     allowed = set(planned_stages(job["workflow"]))
     if not isinstance(state, dict) or any(
         stage not in allowed
@@ -198,6 +200,18 @@ def _sync_workflow(
         for stage, status in state.items()
     ):
         raise ValueError("Invalid workflow progress snapshot.")
+    times = dict(job["stage_times"])
+    for stage, entries in snapshot.get("times", {}).items():
+        if stage not in allowed or not isinstance(entries, dict):
+            raise ValueError("Invalid workflow stage timing.")
+        for field, stamp in entries.items():
+            if (
+                field not in {"started_at", "finished_at"}
+                or not isinstance(stamp, str)
+                or datetime.fromisoformat(stamp).tzinfo is None
+            ):
+                raise ValueError("Invalid workflow stage timestamp.")
+        times[stage] = entries
     for stage, status in stages.items():
         if status in {"succeeded", "failed", "skipped"}:
             state[stage] = status
@@ -209,9 +223,24 @@ def _sync_workflow(
     )
     bundles = {
         "compile": {name: kind, "build.json": "build_info"},
+        "compile_baseline": {"baseline.om": "baseline_om"},
         "compare": {"accuracy.json": "accuracy"},
         "profile": {"profiling.zip": "profiling"},
+        "infer": {"tensors.zip": "tensors"},
     }
+    if job["operation"] == "quantize_onnx":
+        bundles["quantize"] = {"model.quantized.onnx": "quantized_onnx"}
+    if (
+        not job["simulated"]
+        and job["workflow"]["precision"] == "int8"
+        and job["operation"] in {"compile_om", "retry_step"}
+    ):
+        bundles["compare"].update(
+            {
+                "accuracy-onnx-vs-int8.json": "accuracy",
+                "accuracy-fp-vs-int8.json": "accuracy",
+            }
+        )
     awaiting = [
         stage
         for stage in bundles
@@ -230,9 +259,13 @@ def _sync_workflow(
                 state,
                 bundles[stage],
                 settings.max_output_bytes - sum(published.values()),
+                times,
             )
         except (OSError, ValueError) as error:
-            if stage == "compile":
+            if (
+                stage in {"compile", "quantize", "infer"}
+                or job["operation"] != "compile_om"
+            ):
                 raise
             state[stage] = "failed"
             LOG.warning(
@@ -245,8 +278,9 @@ def _sync_workflow(
             stages.update(state)
             published.update({record.filename: record.size for record in files})
     if state != stages:
-        store.publish_progress(job, state, [])
+        store.publish_progress(job, state, [], times=times)
         stages.update(state)
+    job["stage_times"] = times
 
 
 def _publish_bundle(
@@ -257,6 +291,7 @@ def _publish_bundle(
     state: dict[str, str],
     bundle: dict[str, str],
     remaining: int,
+    times: Row,
 ) -> list[FileRecord]:
     """Copy and register all artifacts belonging to one completed stage.
 
@@ -276,6 +311,8 @@ def _publish_bundle(
         Allowlisted filenames and asset kinds belonging to the stage.
     remaining
         Total artifact byte budget left for the job.
+    times
+        Timestamp metadata for the current workflow phases.
 
     Returns
     -------
@@ -305,7 +342,16 @@ def _publish_bundle(
                 raise ValueError("Workflow returned an empty artifact.")
             records.append(FileRecord(identifier, kind, name, size, digest.hexdigest()))
             remaining -= size
-        store.publish_progress(job, state, records)
+        summary = None
+        if "accuracy.json" in bundle:
+            with _open_output(output / "accuracy-summary.json") as stream:
+                data = stream.read(4097)
+            if len(data) > 4096:
+                raise ValueError("Accuracy summary exceeds the metadata limit.")
+            summary = json.loads(data)
+            if not isinstance(summary, dict):
+                raise ValueError("Invalid accuracy summary.")
+        store.publish_progress(job, state, records, summary, times)
     except (OSError, ValueError):
         for path in paths:
             path.unlink(missing_ok=True)
@@ -382,8 +428,9 @@ def _execute(
     records: list[FileRecord] = []
     exit_code = None
     container = None
-    stages: dict[str, str] = {}
+    stages: dict[str, str] = dict(job["stages"])
     published: dict[str, int] = {}
+    deferred = False
     LOG.info("job_id=%s attempt_id=%s event=started", job["id"], attempt)
     try:
         directory.mkdir(mode=0o700, parents=True)
@@ -391,11 +438,51 @@ def _execute(
         output.mkdir()
         # The sandbox UID can write the output bind mount. The host parent is private.
         output.chmod(0o777)
-        shutil.copyfile(
-            settings.data_dir / "assets" / str(job["input_id"]), inputs / "model.onnx"
-        )
         workflow = job["workflow"]
+        action = workflow.get("action") if workflow is not None else None
+        checks = workflow is not None and (
+            workflow["compare"] or workflow["profile"] or action == "retry_step"
+        )
+        split = bool(checks and action in {None, "retry_step"})
+        phase = (
+            "verify"
+            if split and job["lane"] == "device"
+            else "build"
+            if split
+            else "all"
+        )
+        deferred = phase == "build"
+        asset_dir = settings.data_dir / "assets"
+        shutil.copyfile(
+            asset_dir / str(job["input_id"]),
+            inputs / ("reference.zip" if action == "compare_outputs" else "model.onnx"),
+        )
         if workflow is not None:
+            (output / "workspace").mkdir()
+            _, own_outputs = store.job(job["owner"], job["id"])
+            published.update(
+                {record["filename"]: record["size"] for record in own_outputs}
+            )
+            sources_by_kind = {
+                record["kind"]: str(record["id"]) for record in own_outputs
+            }
+            primary = workflow.get("primary_id") or (
+                sources_by_kind.get("om") or sources_by_kind.get("simulated_om")
+                if phase == "verify"
+                else None
+            )
+            baseline = workflow.get("baseline_id") or sources_by_kind.get("baseline_om")
+            if (
+                phase == "verify" or action in {"run_npu", "profile_om"}
+            ) and not primary:
+                raise ValueError("The required finished OM is unavailable.")
+            for filename, identifier in (
+                ("primary.om", primary),
+                ("baseline.om", baseline),
+                ("actual.zip", workflow.get("actual_id")),
+            ):
+                if identifier:
+                    shutil.copyfile(asset_dir / identifier, inputs / filename)
             sources = store.dataset_sources(job)
             if sources:
                 dataset = inputs / "dataset"
@@ -408,13 +495,10 @@ def _execute(
                         settings.data_dir / "assets" / asset_id,
                         dataset / (asset_id + suffix),
                     )
-        use_npu = bool(
-            workflow
-            and not job["simulated"]
-            and (workflow["compare"] or workflow["profile"])
-        )
+        use_npu = job["lane"] == "device" and not job["simulated"]
         if use_npu and settings.ascend_device is None:
             raise ValueError("The 910B2 runtime device is unavailable.")
+        image = client.images.get(job["image"])
         (inputs / "request.json").write_text(
             json.dumps(
                 {
@@ -423,13 +507,15 @@ def _execute(
                     "preset": job["preset"],
                     "simulated": job["simulated"],
                     "workflow": workflow,
+                    "phase": phase,
+                    "executor_image": image.id,
                     "limit_bytes": settings.max_output_bytes,
                 }
             ),
             encoding="utf-8",
         )
         container = client.containers.create(
-            job["image"],
+            image.id or job["image"],
             name=f"atc-attempt-{attempt.hex}",
             labels={"atc.attempt": str(attempt)},
             mounts=[
@@ -453,7 +539,16 @@ def _execute(
             user="10001:10001",
             network_disabled=True,
             read_only=True,
-            tmpfs={"/tmp": "rw,nosuid,nodev,size=67108864"},
+            tmpfs={
+                "/tmp": "rw,nosuid,nodev,size=67108864",
+                **(
+                    {
+                        "/work/output/workspace": f"rw,nosuid,nodev,mode=1777,size={settings.scratch_bytes}"
+                    }
+                    if workflow is not None
+                    else {}
+                ),
+            },
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
             mem_limit=settings.memory_bytes,
@@ -481,6 +576,18 @@ def _execute(
                 while True:
                     container.reload()
                     if workflow is not None:
+                        total = 0
+                        for path in output.iterdir():
+                            try:
+                                info = path.stat(follow_symlinks=False)
+                            except FileNotFoundError:
+                                continue
+                            if S_ISREG(info.st_mode):
+                                total += info.st_size
+                        if total > settings.max_output_bytes + 8192:
+                            raise ResourceError(
+                                413, "Execution exceeded the aggregate output limit."
+                            )
                         _sync_workflow(settings, store, job, output, stages, published)
                     if container.status in ("exited", "dead"):
                         exit_code = int(container.attrs["State"]["ExitCode"])
@@ -510,11 +617,28 @@ def _execute(
             if exit_code == 0:
                 if workflow is None:
                     records = _publish(settings, job, output)
-                elif stages.get("compile") != "succeeded" or any(
-                    stages.get(stage) not in ("succeeded", "failed", "skipped")
-                    for stage in planned_stages(workflow)
-                ):
-                    raise ValueError("Workflow exited without a complete stage result.")
+                else:
+                    expected = planned_stages(workflow)
+                    if deferred:
+                        expected = expected[: expected.index("prepare_validation")]
+                    if any(
+                        stages.get(stage) not in {"succeeded", "failed", "skipped"}
+                        for stage in expected
+                    ):
+                        raise ValueError(
+                            "Workflow exited without a complete stage result."
+                        )
+                    if any(
+                        stages.get(stage) != "succeeded"
+                        for stage in {"compile", "infer", "quantize"} & set(expected)
+                    ):
+                        raise ValueError("A required workflow stage failed.")
+                    if (
+                        action == "retry_step"
+                        and not deferred
+                        and stages.get(workflow["retry_step"]) != "succeeded"
+                    ):
+                        raise ValueError("The retried verification step failed.")
             else:
                 error = f"Execution exited with status {exit_code}. See the task log."
     except ResourceError as failure:
@@ -528,16 +652,19 @@ def _execute(
         if container is not None:
             # A removal failure leaves the attempt running so recovery can confirm exit.
             container.remove(force=True)
+    # Remove phase-local inputs before releasing its slot or queueing verification.
+    shutil.rmtree(inputs, ignore_errors=True)
+    shutil.rmtree(output, ignore_errors=True)
     try:
-        accepted = store.finish(job, exit_code, error, records)
+        accepted = (
+            deferred and error is None and store.queue_verification(job)
+        ) or store.finish(job, exit_code, error, records)
     except ResourceError as failure:
         accepted = False
         store.finish(job, exit_code, str(failure), [])
     if not accepted:
         for record in records:
             (settings.data_dir / "assets" / str(record.id)).unlink(missing_ok=True)
-    shutil.rmtree(inputs, ignore_errors=True)
-    shutil.rmtree(output, ignore_errors=True)
     LOG.info(
         "job_id=%s attempt_id=%s event=finished exit_code=%s",
         job["id"],
@@ -546,8 +673,44 @@ def _execute(
     )
 
 
+def _executor_checks(settings: Settings, client: docker.DockerClient) -> Row:
+    """Check that all enabled local images and the configured runtime exist.
+
+    Parameters
+    ----------
+    settings, client
+        Worker deployment settings and Docker connection.
+
+    Returns
+    -------
+    dict
+        Public boolean readiness flags.
+    """
+    images = {"inspection_image": settings.inspect_image}
+    if not settings.simulate_compile:
+        if settings.compile_image:
+            images["310b4_image"] = settings.compile_image
+        if settings.compile_910b2_image:
+            images["910b2_image"] = settings.compile_910b2_image
+    checks: Row = {}
+    for name, image in images.items():
+        try:
+            client.images.get(image)
+        except NotFound:
+            checks[name] = False
+        else:
+            checks[name] = True
+    if (
+        settings.compile_910b2_image
+        and settings.ascend_device is not None
+        and not settings.simulate_compile
+    ):
+        checks["ascend_runtime"] = "ascend" in client.info().get("Runtimes", {})
+    return checks
+
+
 def run_worker(settings: Settings) -> None:
-    """Run the first-release single-worker queue and reconcile restarts.
+    """Coordinate independent CPU, compile and device slots and recover interrupted work.
 
     Parameters
     ----------
@@ -571,16 +734,32 @@ def run_worker(settings: Settings) -> None:
             raise RuntimeError("Another worker is already active.")
         _recover(settings, store, client)
         cleanup_due = monotonic()
-        while True:
-            lease.execute("SELECT 1")
-            if monotonic() >= cleanup_due:
-                cleanup_due = monotonic() + 5
-                try:
-                    store.clear_browser_files()
-                except OSError:
-                    LOG.exception("event=browser_cleanup_failed")
-            job = store.claim()
-            if job is None:
+        slots = {
+            "cpu": settings.cpu_slots,
+            "compile": settings.compile_slots,
+            "device": 1,
+        }
+        running: dict[str, set[Future[None]]] = {lane: set() for lane in slots}
+        with ThreadPoolExecutor(max_workers=sum(slots.values())) as pool:
+            while True:
+                lease.execute("SELECT 1")
+                if monotonic() >= cleanup_due:
+                    cleanup_due = monotonic() + 5
+                    try:
+                        store.record_worker_status(_executor_checks(settings, client))
+                        store.clear_browser_files()
+                    except OSError:
+                        LOG.exception("event=browser_cleanup_failed")
+                for lane, capacity in slots.items():
+                    finished = {attempt for attempt in running[lane] if attempt.done()}
+                    for attempt in finished:
+                        attempt.result()
+                    running[lane].difference_update(finished)
+                    while len(running[lane]) < capacity:
+                        job = store.claim(lane)
+                        if job is None:
+                            break
+                        running[lane].add(
+                            pool.submit(_execute, settings, store, client, job)
+                        )
                 sleep(0.25)
-            else:
-                _execute(settings, store, client, job)

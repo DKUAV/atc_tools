@@ -182,7 +182,7 @@ def run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> No
         boxes[:, [1, 3]] = ((boxes[:, [1, 3]] - top) / scale).clip(0, image.shape[0])
         output = []
         for box, score, label in zip(boxes, scores, classes, strict=True):
-            x1, y1, x2, y2 = map(float, box)
+            x1, y1, x2, y2 = map(float, np.asarray(box).tolist())
             if x2 <= x1 or y2 <= y1:
                 continue
             output.append(

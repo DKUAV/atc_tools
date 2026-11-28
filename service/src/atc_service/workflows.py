@@ -70,6 +70,128 @@ class Conversion(Selection):
     preparation: Preparation = Field(default_factory=Preparation)
 
 
+class Operation(Selection):
+    """Select a standalone workflow operation and its owned input resources."""
+
+    operation: Literal[
+        "quantize_onnx",
+        "compile_om",
+        "run_cpu",
+        "run_npu",
+        "compare_outputs",
+        "profile_om",
+    ]
+    input_id: UUID
+    preset: str | None = Field(default=None, max_length=64)
+    primary_id: UUID | None = None
+    actual_id: UUID | None = None
+    samples: list[Sample] = Field(default_factory=list, max_length=128)
+    shapes: dict[Annotated[int, Field(ge=0, lt=16)], Shape] = Field(
+        default_factory=dict, max_length=16
+    )
+    preparation: Preparation = Field(default_factory=Preparation)
+
+
+class StepRetry(Selection):
+    """Select a failed optional stage and, optionally, replacement validation data."""
+
+    step: Literal["compare", "profile"]
+    validation: list[Sample] | None = Field(default=None, min_length=1, max_length=128)
+
+
+def resolve_operation(
+    body: Operation, presets: dict[str, "Preset"], settings: Settings
+) -> tuple[str, bool, dict[str, object]]:
+    """Resolve an atomic operation to a trusted image and a fixed task plan.
+
+    Parameters
+    ----------
+    body
+        Validated operation request.
+    presets
+        Enabled workflow presets by public ID.
+    settings
+        Deployment image and simulator configuration.
+
+    Returns
+    -------
+    tuple
+        Executor image, simulation flag, and immutable job spec.
+
+    Raises
+    ------
+    ResourceError
+        A target, resource or setting is missing or inapplicable.
+    """
+    action = body.operation
+    target = presets.get(body.preset or "")
+    if (
+        action in {"compile_om", "quantize_onnx", "run_npu", "profile_om"}
+        and target is None
+    ):
+        raise ResourceError(422, "Select an enabled preset for the operation.")
+    if action in {"run_cpu", "compare_outputs"} and body.preset is not None:
+        raise ResourceError(
+            422, "This operation uses the CPU executor without a target preset."
+        )
+    if action == "quantize_onnx" and (target is None or target.precision != "int8"):
+        raise ResourceError(422, "Select an enabled INT8 preset for quantization.")
+    npu = action in {"run_npu", "profile_om"}
+    if npu and (target is None or not target.checks or target.target != "910B2"):
+        raise ResourceError(422, "Select an enabled 910B2 runtime preset.")
+    if (body.primary_id is not None) != npu or (body.actual_id is not None) != (
+        action == "compare_outputs"
+    ):
+        raise ResourceError(
+            422,
+            "Provide the OM or second tensor archive only for the matching operation.",
+        )
+    if bool(body.samples) != (
+        action in {"quantize_onnx", "run_cpu", "run_npu", "profile_om"}
+    ):
+        raise ResourceError(
+            422, "Provide samples for quantization or inference and profiling."
+        )
+    if (
+        body.shapes
+        and action == "compare_outputs"
+        or body.preparation != Preparation()
+        and not body.samples
+    ):
+        raise ResourceError(
+            422, "This operation does not accept those input preparation settings."
+        )
+    if body.preparation.values == "custom" and (
+        not body.preparation.mean
+        or len(body.preparation.mean) != len(body.preparation.std)
+    ):
+        raise ResourceError(
+            422, "Enter matching mean and positive standard deviation values."
+        )
+    if len({len(sample) for sample in body.samples}) > 1:
+        raise ResourceError(422, "Every sample needs the same number of model inputs.")
+    data = body.model_dump(mode="json")
+    return (
+        target.image if target else settings.inspect_image,
+        bool(target and target.simulated),
+        {
+            "action": action,
+            "target": target.target if target else None,
+            "precision": target.precision if target else None,
+            "calibration": data["samples"] if action == "quantize_onnx" else [],
+            "validation": data["samples"]
+            if action in {"run_cpu", "run_npu", "profile_om"}
+            else [],
+            "compare": False,
+            "profile": False,
+            "shapes": data["shapes"],
+            "preparation": data["preparation"],
+            "primary_id": data["primary_id"],
+            "actual_id": data["actual_id"],
+        },
+    )
+
+
 @dataclass(frozen=True)
 class Preset:
     """Bind one visible preset to a trusted executor and fixed behavior."""
@@ -199,10 +321,26 @@ def planned_stages(workflow: dict[str, object]) -> list[str]:
     list[str]
         Stage IDs in execution order.
     """
+    action = workflow.get("action")
+    if action == "retry_step":
+        stages = ["compile_baseline"] if workflow.get("build_baseline") else []
+        return [*stages, "prepare_validation", str(workflow["retry_step"])]
+    atomic = {
+        "quantize_onnx": ["prepare_calibration", "quantize"],
+        "compile_om": ["compile"],
+        "run_cpu": ["prepare_validation", "infer"],
+        "run_npu": ["prepare_validation", "infer"],
+        "compare_outputs": ["compare"],
+        "profile_om": ["prepare_validation", "profile"],
+    }
+    if isinstance(action, str):
+        return atomic[action]
     stages = []
     if workflow["precision"] == "int8":
         stages.extend(("prepare_calibration", "quantize"))
     stages.append("compile")
+    if workflow["precision"] == "int8" and workflow["compare"]:
+        stages.append("compile_baseline")
     if workflow["compare"] or workflow["profile"]:
         stages.append("prepare_validation")
     if workflow["compare"]:

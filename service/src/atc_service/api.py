@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
+from psycopg import Error as DatabaseError
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -29,8 +30,11 @@ from atc_service.store import FileRecord, ResourceError, Row, Store
 from atc_service.workflows import (
     DATASET_EXTENSIONS,
     Conversion,
+    Operation,
+    StepRetry,
     browser_presets,
     planned_stages,
+    resolve_operation,
     resolve_workflow,
 )
 
@@ -76,6 +80,11 @@ class Job(BaseModel):
     finished_at: datetime | None
     outputs: list[Asset] = Field(default_factory=list)
     stages: dict[str, str] = Field(default_factory=dict)
+    stage_times: dict[str, dict[str, datetime]] = Field(default_factory=dict)
+    accuracy_summary: dict[str, object] | None = None
+    retryable_steps: list[str] = Field(default_factory=list)
+    parent_job_id: UUID | None = None
+    validation_input_count: int = 0
 
 
 class LogPart(BaseModel):
@@ -304,7 +313,50 @@ def create_app(settings: Settings) -> FastAPI:
             else ["inspect_onnx"],
             "compile_presets": [preset] if preset else [],
             "max_upload_bytes": settings.max_upload_bytes,
+            "workflow_presets": [preset.public() for preset in presets.values()],
+            "standalone_operations": ["run_cpu", "compare_outputs"]
+            + (["compile_om"] if presets else [])
+            + (
+                ["quantize_onnx"]
+                if any(p.precision == "int8" for p in presets.values())
+                else []
+            )
+            + (
+                ["run_npu", "profile_om"]
+                if any(p.checks for p in presets.values())
+                else []
+            ),
         }
+
+    @app.get("/readyz")
+    def ready() -> JSONResponse:
+        """Report the live worker and its local executor prerequisites.
+
+        Returns
+        -------
+        JSONResponse
+            HTTP 200 when the database, worker, and configured images are ready.
+        """
+        try:
+            with store.connect() as db:
+                row = db.execute(
+                    "SELECT checks, heartbeat_at > now() - interval '20 seconds' AS live FROM worker_status"
+                ).fetchone()
+        except DatabaseError:
+            return JSONResponse(
+                {"status": "unready", "worker": False, "checks": {"database": False}},
+                status_code=503,
+            )
+        checks = row["checks"] if row and row["live"] else {}
+        healthy = bool(checks) and all(checks.values())
+        return JSONResponse(
+            {
+                "status": "ready" if healthy else "unready",
+                "worker": bool(row and row["live"]),
+                "checks": checks,
+            },
+            status_code=200 if healthy else 503,
+        )
 
     async def save_upload(
         request: Request,
@@ -580,7 +632,117 @@ def create_app(settings: Settings) -> FastAPI:
             Current job and its output assets.
         """
         row, outputs = store.job(owner, job_id)
-        return Job.model_validate({**row, "outputs": outputs})
+        return describe_job(row, outputs, row["browser_session_id"] is None)
+
+    @app.get("/v1/jobs")
+    def jobs(owner: Owner) -> list[BrowserTask]:
+        """List recent script-submitted jobs for one account.
+
+        Parameters
+        ----------
+        owner
+            Authenticated account.
+
+        Returns
+        -------
+        list[BrowserTask]
+            Recent script task summaries in reverse chronological order.
+        """
+        with store.connect() as db:
+            rows = db.execute(
+                "SELECT j.id, a.filename, j.operation, j.preset, j.state, j.created_at "
+                "FROM jobs j JOIN assets a ON a.id = j.input_id WHERE j.owner = %s "
+                "AND j.browser_session_id IS NULL ORDER BY j.created_at DESC, j.id DESC LIMIT 50",
+                (owner,),
+            ).fetchall()
+        return [BrowserTask.model_validate(row) for row in rows]
+
+    @app.post("/v1/dataset-files", status_code=201)
+    async def script_dataset(
+        request: Request,
+        owner: Owner,
+        filename: Annotated[str, Query(min_length=5, max_length=200)],
+    ) -> Asset:
+        """Upload one dataset file for a script workflow.
+
+        Parameters
+        ----------
+        request, owner, filename
+            Raw octet stream, authenticated account, and original file name.
+
+        Returns
+        -------
+        Asset
+            Registered account-owned dataset asset.
+        """
+        row = await save_upload(
+            request, filename, lambda record: store.add_asset(owner, record), "dataset"
+        )
+        return Asset.model_validate(row)
+
+    @app.post("/v1/operations", status_code=202)
+    def script_operation(
+        body: Operation,
+        owner: Owner,
+        idempotency_key: Annotated[str | None, Header(max_length=128)] = None,
+    ) -> Job:
+        """Queue an independently callable model or verification operation.
+
+        Parameters
+        ----------
+        body, owner, idempotency_key
+            Operation selection, account, and optional request key.
+
+        Returns
+        -------
+        Job
+            Persisted operation and its stage plan.
+        """
+        image, simulated, workflow = resolve_operation(body, presets, settings)
+        row = store.submit(
+            owner,
+            body.operation,
+            body.input_id,
+            image,
+            body.preset,
+            simulated,
+            idempotency_key,
+            workflow=workflow,
+        )
+        return job(owner, row["id"])
+
+    @app.post("/v1/workflows", status_code=202)
+    def script_workflow(
+        body: Conversion,
+        owner: Owner,
+        idempotency_key: Annotated[str | None, Header(max_length=128)] = None,
+    ) -> Job:
+        """Queue the same full conversion workflow available in the browser.
+
+        Parameters
+        ----------
+        body, owner, idempotency_key
+            Conversion selection, account, and optional request key.
+
+        Returns
+        -------
+        Job
+            Persisted conversion and its stage plan.
+        """
+        preset = presets.get(body.preset)
+        if preset is None:
+            raise HTTPException(422, "Select an enabled workflow preset.")
+        row = store.submit(
+            owner,
+            "compile_om",
+            body.model_id,
+            preset.image,
+            preset.id,
+            preset.simulated,
+            idempotency_key,
+            workflow=resolve_workflow(body, preset),
+        )
+        return job(owner, row["id"])
 
     @app.post("/v1/jobs/{job_id}/cancel", status_code=202)
     def cancel(owner: Owner, job_id: UUID) -> Job:
@@ -607,7 +769,7 @@ def create_app(settings: Settings) -> FastAPI:
         job_id: UUID,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> LogPart:
-        """Read the current attempt log from a client-supplied byte offset.
+        """Read the task log across phases from a client-supplied byte offset.
 
         Parameters
         ----------
@@ -625,18 +787,31 @@ def create_app(settings: Settings) -> FastAPI:
         """
         row, _ = store.job(owner, job_id)
         attempt = row["attempt_id"]
-        path = settings.data_dir / "runs" / str(attempt) / "task.log"
-        try:
-            with path.open("rb") as log:
-                log.seek(min(offset, path.stat().st_size))
-                data = log.read(64 * 1024)
-                return LogPart(
-                    attempt_id=attempt,
-                    text=data.decode("utf-8", "replace"),
-                    next_offset=log.tell(),
-                )
-        except FileNotFoundError:
-            return LogPart(attempt_id=attempt, text="", next_offset=0)
+        with store.connect() as db:
+            attempts = db.execute(
+                "SELECT id FROM attempts WHERE job_id = %s ORDER BY started_at, id",
+                (job_id,),
+            ).fetchall()
+        data = bytearray()
+        position = 0
+        for row in attempts:
+            path = settings.data_dir / "runs" / str(row["id"]) / "task.log"
+            try:
+                with path.open("rb") as log:
+                    size = path.stat().st_size
+                    if offset < position + size:
+                        log.seek(max(0, offset - position))
+                        data.extend(log.read(64 * 1024 - len(data)))
+                        if len(data) == 64 * 1024:
+                            break
+                    position += size
+            except FileNotFoundError:
+                continue
+        return LogPart(
+            attempt_id=attempt,
+            text=data.decode("utf-8", "replace"),
+            next_offset=offset + len(data) if data else min(offset, position),
+        )
 
     @app.post("/web/api/login", status_code=204)
     def login(request: Request, body: BrowserLogin) -> Response:
@@ -878,9 +1053,26 @@ def create_app(settings: Settings) -> FastAPI:
             Task status with current-session outputs.
         """
         row, outputs = store.job(session.owner, job_id)
-        available = row["browser_session_id"] == session.id
+        return describe_job(row, outputs, row["browser_session_id"] == session.id)
+
+    def describe_job(row: Row, outputs: list[Row], available: bool) -> Job:
+        """Present persisted stages, visible artifacts, and possible actions.
+
+        Parameters
+        ----------
+        row, outputs
+            Owned job and its associated assets.
+        available
+            Whether the caller shares the job's artifact scope.
+
+        Returns
+        -------
+        Job
+            Public task status and available retry actions.
+        """
         stages = row["stages"]
-        if row["workflow"] is not None:
+        workflow = row["workflow"]
+        if workflow is not None:
             stages = {
                 stage: stages.get(stage, "pending")
                 for stage in planned_stages(row["workflow"])
@@ -906,9 +1098,149 @@ def create_app(settings: Settings) -> FastAPI:
                     )
                     if first_pending is not None:
                         stages[first_pending] = "failed"
+                for stage, status in stages.items():
+                    if status == "pending":
+                        stages[stage] = (
+                            "cancelled" if row["state"] == "cancelled" else "skipped"
+                        )
+        has_primary = any(
+            asset["kind"] in {"om", "simulated_om"} for asset in outputs
+        ) or bool(workflow and workflow.get("primary_id"))
+        retryable = [
+            step
+            for step in ("compare", "profile")
+            if stages.get(step) in {"failed", "skipped", "cancelled"}
+        ]
+        if not (
+            available
+            and has_primary
+            and workflow
+            and workflow.get("action") in {None, "retry_step"}
+            and row["state"] in {"succeeded", "failed", "cancelled"}
+        ):
+            retryable = []
+        validation = workflow["validation"] if workflow and available else []
         return Job.model_validate(
-            {**row, "stages": stages, "outputs": outputs if available else []}
+            {
+                **row,
+                "stages": stages,
+                "outputs": [
+                    asset for asset in outputs if asset["kind"] != "baseline_om"
+                ]
+                if available
+                else [],
+                "accuracy_summary": row["accuracy_summary"] if available else None,
+                "retryable_steps": retryable,
+                "parent_job_id": workflow.get("parent_job_id") if workflow else None,
+                "validation_input_count": len(validation[0]) if validation else 0,
+            }
         )
+
+    def enqueue_retry(
+        owner: str,
+        session_id: UUID | None,
+        job_id: UUID,
+        body: StepRetry,
+        key: str | None,
+    ) -> Row:
+        """Queue one optional verification step against the previous primary OM.
+
+        Parameters
+        ----------
+        owner, session_id, job_id, body, key
+            Caller scope, parent task, requested stage, and submission key.
+
+        Returns
+        -------
+        dict
+            Newly queued or idempotently returned child task.
+        """
+        row, outputs = store.job(owner, job_id)
+        if row["browser_session_id"] != session_id:
+            raise ResourceError(404, "Task not found in this scope.")
+        if body.step not in describe_job(row, outputs, True).retryable_steps:
+            raise ResourceError(409, "The optional step is not retryable.")
+        workflow = row["workflow"]
+        files = {asset["kind"]: str(asset["id"]) for asset in outputs}
+        primary = (
+            workflow.get("primary_id") or files.get("om") or files.get("simulated_om")
+        )
+        baseline = files.get("baseline_om") or workflow.get("baseline_id")
+        if not row["simulated"] and settings.ascend_device is None:
+            raise ResourceError(409, "The 910B2 runtime is unavailable.")
+        retry = {
+            **workflow,
+            "action": "retry_step",
+            "retry_step": body.step,
+            "parent_job_id": str(job_id),
+            "primary_id": primary,
+            "baseline_id": baseline,
+            "calibration": [],
+            "compare": False,
+            "profile": False,
+            "build_baseline": body.step == "compare"
+            and workflow["precision"] == "int8"
+            and not baseline,
+        }
+        if body.validation is not None:
+            retry["validation"] = [
+                [str(item) for item in sample] for sample in body.validation
+            ]
+        return store.submit(
+            owner,
+            "retry_step",
+            row["input_id"],
+            row["image"],
+            row["preset"],
+            row["simulated"],
+            key,
+            session_id,
+            retry,
+        )
+
+    @app.post("/v1/jobs/{job_id}/retry", status_code=202)
+    def script_retry(
+        owner: Owner,
+        job_id: UUID,
+        body: StepRetry,
+        idempotency_key: Annotated[str | None, Header(max_length=128)] = None,
+    ) -> Job:
+        """Retry a failed optional script workflow stage.
+
+        Parameters
+        ----------
+        owner, job_id, body, idempotency_key
+            Authenticated account, parent task, stage selection, and submission key.
+
+        Returns
+        -------
+        Job
+            Linked verification task using the compiled OM.
+        """
+        row = enqueue_retry(owner, None, job_id, body, idempotency_key)
+        return job(owner, row["id"])
+
+    @app.post("/web/api/tasks/{job_id}/retry", status_code=202)
+    def browser_retry(
+        session: Session,
+        job_id: UUID,
+        body: StepRetry,
+        idempotency_key: Annotated[str, Header(min_length=1, max_length=128)],
+    ) -> Job:
+        """Retry an optional stage with artifacts owned by this browser session.
+
+        Parameters
+        ----------
+        session, job_id, body, idempotency_key
+            Current browser session, parent task, stage selection, and retry key.
+
+        Returns
+        -------
+        Job
+            New child task associated with the previously compiled OM.
+        """
+        row = enqueue_retry(session.owner, session.id, job_id, body, idempotency_key)
+        return browser_task(session, row["id"])
 
     @app.get("/web/api/tasks/{job_id}/logs")
     def browser_log(

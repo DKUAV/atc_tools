@@ -26,6 +26,11 @@ def main() -> int:
         request = json.loads((inputs / "request.json").read_text(encoding="utf-8"))
         if request["version"] != 1:
             raise ValueError("Unsupported task protocol.")
+        if request.get("workflow") is not None:
+            from atc_tools.workflow import run_workflow
+
+            run_workflow(inputs, output, request)
+            return 0
         if request["operation"] == "inspect_onnx":
             print("Inspecting ONNX graph and embedded weights.", flush=True)
             metadata = inspect_onnx(model, require_embedded=True)
@@ -37,11 +42,6 @@ def main() -> int:
                 f"Inspected {len(metadata['inputs'])} inputs and {len(metadata['outputs'])} outputs."
             )
         elif request["operation"] == "compile_om":
-            if request.get("workflow") is not None:
-                from atc_tools.workflow import run_workflow
-
-                run_workflow(inputs, output, request)
-                return 0
             simulated = request["simulated"]
             print(
                 "Simulating Ascend310B4 compilation."

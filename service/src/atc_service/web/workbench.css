@@ -176,6 +176,12 @@ button:disabled, select:disabled, input:disabled { cursor: default; opacity: .7;
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .task-detail { display: grid; gap: .8rem; border-top: 1px solid var(--line); margin-top: 1rem; padding-top: .9rem; }
+#accuracy-verdict[data-result="passed"] { background: var(--forest-tint); color: var(--forest); }
+#accuracy-verdict[data-result="failed"] { background: var(--warning-tint); color: var(--warning-ink); }
+#retry-inputs { color: var(--ocean-ink); font-size: .875rem; margin: 0 0 .55rem; }
+#retry-inputs summary { cursor: pointer; width: fit-content; }
+#retry-inputs[open] > div { margin-top: .5rem; }
+#retry-parent { justify-self: start; }
 #task-title { min-width: 0; overflow-wrap: anywhere; }
 #cancel { white-space: nowrap; }
 .log-card { overflow: hidden; border: 1px solid #244138; border-radius: .66rem; background: #162c26; color: #f3f9f4; }

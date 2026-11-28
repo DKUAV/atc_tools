@@ -295,6 +295,7 @@ def check_dataset_workflow(alice: Browser, bob: Browser) -> None:
         json.loads(alice.call(path, 202, json.dumps(body).encode(), headers))
     )
     assert job["stages"] == {
+        "compile_baseline": "succeeded",
         "prepare_calibration": "succeeded",
         "quantize": "succeeded",
         "compile": "succeeded",

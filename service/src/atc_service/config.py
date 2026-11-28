@@ -29,6 +29,9 @@ class Settings:
     compile_910b2_image: str | None = None
     amct_targets: tuple[str, ...] = ()
     ascend_device: int | None = None
+    cpu_slots: int = 2
+    compile_slots: int = 1
+    scratch_bytes: int = 4 * 1024**3
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -74,6 +77,9 @@ class Settings:
             ascend_device=int(device)
             if (device := os.environ.get("ATC_910B2_DEVICE"))
             else None,
+            cpu_slots=int(os.environ.get("ATC_CPU_SLOTS", 2)),
+            compile_slots=int(os.environ.get("ATC_COMPILE_SLOTS", 1)),
+            scratch_bytes=int(os.environ.get("ATC_SCRATCH_BYTES", 4 * 1024**3)),
         )
 
     def __post_init__(self) -> None:
@@ -100,6 +106,9 @@ class Settings:
                 self.max_pending_jobs,
                 self.max_account_bytes,
                 self.browser_session_seconds,
+                self.cpu_slots,
+                self.compile_slots,
+                self.scratch_bytes,
             )
             <= 0
         ):
