@@ -86,7 +86,7 @@ jobs:
           test "$(cut -f2 images.txt)" = "$(docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$ATC_APP_IMAGE")"
           SSH_CONFIG_DIR=/run/atc-test docker compose -f compose.yaml config --images | grep -Fx "$ATC_APP_IMAGE"
           cd "$GITHUB_WORKSPACE"
-          ATC_COMPOSE_FILE="$RUNNER_TEMP/bundle/compose.yaml" bash scripts/ci/service-smoke.sh simulate
+          ATC_COMPOSE_FILE="$RUNNER_TEMP/bundle/compose.yaml" ATC_SMOKE_WHEEL_DIR="$PWD/dist" bash scripts/ci/service-smoke.sh simulate
       - name: Publish and record the tested artifact
         if: inputs.publish
         env:
