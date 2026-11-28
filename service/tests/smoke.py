@@ -63,7 +63,9 @@ def request(
         return body
 
 
-def await_job(token: str, job: dict[str, Any], expected: str) -> dict[str, Any]:
+def await_job(
+    token: str, job: dict[str, Any], expected: str, *, timeout: float = 60
+) -> dict[str, Any]:
     """Wait for a submitted job to reach its expected terminal state.
 
     Parameters
@@ -74,13 +76,15 @@ def await_job(token: str, job: dict[str, Any], expected: str) -> dict[str, Any]:
         Accepted job response.
     expected
         Expected terminal job state.
+    timeout
+        Maximum wait in seconds.
 
     Returns
     -------
     dict
         Completed job record.
     """
-    deadline = monotonic() + 60
+    deadline = monotonic() + timeout
     while monotonic() < deadline:
         result = json.loads(request(token, f"/v1/jobs/{job['id']}"))
         if result["state"] in ("succeeded", "failed", "cancelled"):

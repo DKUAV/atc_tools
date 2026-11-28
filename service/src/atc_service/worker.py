@@ -8,6 +8,7 @@ import os
 import shutil
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
+from errno import ENODATA
 from hashlib import sha256
 from pathlib import Path
 from stat import S_ISREG
@@ -184,11 +185,18 @@ def _sync_workflow(
     published
         Bytes already registered per filename, updated in place.
     """
-    try:
-        with _open_output(output / "progress.json") as stream:
-            data = stream.read(4097)
-    except FileNotFoundError:
-        return
+    for attempt in range(3):
+        try:
+            with _open_output(output / "progress.json") as stream:
+                data = stream.read(4097)
+            break
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            if error.errno != ENODATA or attempt == 2:
+                raise
+            # A Docker Desktop bind mount can invalidate an open handle on replace.
+            sleep(0.01)
     if len(data) > 4096:
         raise ValueError("Workflow progress snapshot is too large.")
     snapshot = json.loads(data)

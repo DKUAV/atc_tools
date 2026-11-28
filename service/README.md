@@ -108,3 +108,11 @@ Poll `GET /v1/jobs/{job_id}` for status and artifact IDs. Use `GET /v1/jobs/{job
 For example, submit `{"operation":"run_cpu","input_id":"<inspected-onnx-id>","samples":[["<dataset-asset-id>"]]}` to `/v1/operations`. `GET /openapi.json` exposes the typed request fields and responses. In the browser, a failed optional verification displays a retry action while the original OM remains available. Users can supply replacement validation files when retrying.
 
 Run `uv run --locked python service/tests/delivery_smoke.py` with the same bearer-token environment used by `smoke.py` to exercise standalone operations, phased logs and retry end to end. The simulator returns `model.simulated` and marks substituted NPU results. Laboratory acceptance covers real ATC, AMCT and device behavior.
+
+## GitHub Actions
+
+The ARM64 service workflow runs the static checks, unit tests and three Compose simulation suites on pull requests and pushes to `master`. A version tag such as `v0.1.0` runs the same checks and publishes the tested service image to `ghcr.io/dkuav/atc-tools-service:v0.1.0`. The first package publication requires setting its visibility to public in GitHub Packages. [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+
+To use a published service image with the existing Compose or offline packaging file, pull the desired version and tag it locally as `atc-service:local`. The API and worker use the same image. The CPU executor can be built from the corresponding source tag with the Compose `build` profile.
+
+Run **MobileNetV2 Ascend compilation** from the Actions tab for a real compiler check. Native ARM64 CI downloads and verifies a pinned [ONNX Model Zoo MobileNetV2 model](https://github.com/onnx/models/blob/4c46cd00fbdb7cd30b6c1c17ab54f2e1f4f7b177/validated/vision/classification/mobilenet/README.md), submits it to the service with a batch size of one, and verifies 310B4 and 910B2 OM downloads. The workflow retains per-target compiler logs and build metadata in its run artifacts. Device inference and profiling are covered by laboratory acceptance.

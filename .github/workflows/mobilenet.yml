@@ -1,0 +1,51 @@
+name: MobileNetV2 Ascend compilation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOCKER_DEFAULT_PLATFORM: linux/arm64
+  # Includes DKUAV/images#39 and resolves to the same toolchain for both SoCs.
+  ASCEND_ATC_IMAGE: ghcr.io/dkuav/ascend-atc:8.5.0-910b-ubuntu22.04-py3.11@sha256:1e25fd6ba118ac40b2690035ae4b33678a790ffb88da7632cb86c1d22c03685d
+
+jobs:
+  compile:
+    name: Compile MobileNetV2 through the API
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: '0.11.31'
+          python-version: '3.12'
+      - name: Download the pinned public model
+        run: |
+          model="$RUNNER_TEMP/mobilenetv2-12.onnx"
+          revision=4c46cd00fbdb7cd30b6c1c17ab54f2e1f4f7b177
+          source="https://media.githubusercontent.com/media/onnx/models/$revision/validated/vision/classification/mobilenet/model/mobilenetv2-12.onnx"
+          curl --fail --silent --show-error --location --retry 3 --max-time 120 --output "$model" "$source"
+          printf '%s  %s\n' c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5 "$model" | sha256sum --check --strict
+      - name: Build the CANN executor
+        run: |
+          docker build --platform linux/arm64 --file deploy/Dockerfile.ascend-executor \
+            --build-arg "ASCEND_ATC_IMAGE=$ASCEND_ATC_IMAGE" --tag atc-executor:ci-ascend .
+      - name: Compile for 310B4 and 910B2
+        env:
+          ATC_COMPILE_IMAGE: atc-executor:ci-ascend
+          ATC_COMPILE_910B2_IMAGE: atc-executor:ci-ascend
+        run: |
+          uv sync --locked --no-dev
+          bash scripts/ci/service-smoke.sh compile "$RUNNER_TEMP/mobilenetv2-12.onnx" "$RUNNER_TEMP/mobilenet-logs"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mobilenet-compilation-logs
+          path: ${{ runner.temp }}/mobilenet-logs
+          if-no-files-found: ignore
+          retention-days: 7
