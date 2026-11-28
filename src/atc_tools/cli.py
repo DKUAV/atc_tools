@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from importlib import import_module
-from importlib.metadata import version
+from importlib.metadata import distributions, version
 from pathlib import Path
 
 
@@ -173,8 +173,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="atc_tools", description="Model preparation and inference for Ascend CANN."
     )
+    # The vendor interpreter imports the installed wheel through a package symlink.
+    packages = distributions(name="atc_tools", path=[str(Path(__file__).resolve().parents[1])])
+    installed = next(iter(packages), None)
+    tool_version = installed.version if installed is not None else version("atc_tools")
     parser.add_argument(
-        "--version", action="version", version=f"%(prog)s {version('atc_tools')}"
+        "--version", action="version", version=f"%(prog)s {tool_version}"
     )
     groups = parser.add_subparsers(required=True)
     _add_onnx_commands(

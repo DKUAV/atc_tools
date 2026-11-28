@@ -102,7 +102,7 @@ class StepRetry(Selection):
 def resolve_operation(
     body: Operation, presets: dict[str, "Preset"], settings: Settings
 ) -> tuple[str, bool, dict[str, object]]:
-    """Resolve an atomic operation to a trusted image and a fixed task plan.
+    """Resolve an atomic operation to the installed runtime and a fixed task plan.
 
     Parameters
     ----------
@@ -111,7 +111,7 @@ def resolve_operation(
     presets
         Enabled workflow presets by public ID.
     settings
-        Deployment image and simulator configuration.
+        Runtime and simulator configuration.
 
     Returns
     -------
@@ -172,7 +172,7 @@ def resolve_operation(
         raise ResourceError(422, "Every sample needs the same number of model inputs.")
     data = body.model_dump(mode="json")
     return (
-        target.image if target else settings.inspect_image,
+        settings.runtime,
         bool(target and target.simulated),
         {
             "action": action,
@@ -234,13 +234,7 @@ def browser_presets(settings: Settings) -> list[Preset]:
         Selectable compile presets.
     """
     presets = []
-    for target, configured in (
-        ("310B4", settings.compile_image),
-        ("910B2", settings.compile_910b2_image),
-    ):
-        image = settings.inspect_image if settings.simulate_compile else configured
-        if image is None:
-            continue
+    for target in ("310B4", "910B2"):
         checks = target == "910B2" and (
             settings.simulate_compile or settings.ascend_device is not None
         )
@@ -256,7 +250,7 @@ def browser_presets(settings: Settings) -> list[Preset]:
                     f"{target.lower()}-{precision}",
                     target,
                     precision,
-                    image,
+                    settings.runtime,
                     settings.simulate_compile,
                     checks,
                 )

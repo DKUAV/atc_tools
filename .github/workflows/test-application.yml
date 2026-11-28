@@ -1,0 +1,115 @@
+name: Test the ARM64 application
+on:
+  workflow_call:
+    inputs:
+      publish:
+        required: true
+        type: boolean
+      wheel_run:
+        required: false
+        type: string
+        default: ''
+jobs:
+  verify:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: '0.11.31'
+          python-version: '3.12'
+      - name: Check source and scheduler contracts
+        run: |
+          uv sync --locked
+          uv sync --locked --project service
+          uv run --locked ruff check src service/src service/tests tests
+          uv run --locked ty check
+          uv run --locked pytest -q tests
+          uv run --locked --project service python -m unittest discover -s service/tests -p 'test_*.py'
+          node --check service/src/atc_service/web/workbench.js
+      - name: Build candidate wheels
+        if: inputs.wheel_run == ''
+        run: |
+          export SETUPTOOLS_SCM_PRETEND_VERSION="0.2.0.dev${GITHUB_RUN_NUMBER}+g${GITHUB_SHA:0:12}"
+          uv build --wheel
+          uv build --project service --wheel --out-dir "$PWD/dist"
+          cd dist
+          sha256sum *.whl > SHA256SUMS
+          echo "$GITHUB_SHA" > source-commit
+      - name: Verify release candidate identity
+        if: inputs.wheel_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.wheel_run }}
+        run: |
+          [[ $GITHUB_REF_TYPE == tag && $GITHUB_REF_NAME =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && $CANDIDATE_RUN =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN" | jq -e \
+            --arg sha "$GITHUB_SHA" --arg repo "$GITHUB_REPOSITORY" \
+            '.head_sha == $sha and .head_repository.full_name == $repo and .conclusion == "success" and .path == ".github/workflows/ci.yml" and .event != "pull_request"'
+          gh run download "$CANDIDATE_RUN" -n candidate-wheels -D dist
+          cd dist
+          test "$(cat source-commit)" = "$GITHUB_SHA"
+          sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: candidate-wheels
+          path: dist/
+          if-no-files-found: error
+      - name: Build application and exercise simulated and real compilation
+        env:
+          ATC_APP_IMAGE: atc-tools:verified
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          base=$(cat deploy/base-image.txt)
+          [[ $base =~ @sha256:[0-9a-f]{64}$ ]]
+          docker build -f deploy/Dockerfile.service --build-arg ASCEND_ATC_IMAGE="$base" --build-arg VCS_REF="$GITHUB_SHA" -t "$ATC_APP_IMAGE" .
+          bash scripts/ci/compile-mobilenet.sh
+      - name: Verify offline image archive
+        env:
+          ATC_APP_IMAGE: atc-tools:verified
+        run: |
+          bash deploy/pack-offline.sh "$RUNNER_TEMP/bundle" "$ATC_APP_IMAGE"
+          cd "$RUNNER_TEMP/bundle"
+          sha256sum -c SHA256SUMS
+          docker image rm "$ATC_APP_IMAGE"
+          docker image load -i images.tar
+          test "$(cut -f2 images.txt)" = "$(docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$ATC_APP_IMAGE")"
+          SSH_CONFIG_DIR=/run/atc-test docker compose -f compose.yaml config --images | grep -Fx "$ATC_APP_IMAGE"
+          cd "$GITHUB_WORKSPACE"
+          ATC_COMPOSE_FILE="$RUNNER_TEMP/bundle/compose.yaml" bash scripts/ci/service-smoke.sh simulate
+      - name: Publish and record the tested artifact
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [[ $GITHUB_REF_TYPE == tag ]]; then tag=$GITHUB_REF_NAME; fi
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/atc-tools-service:$tag"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "$image" > /dev/null 2>"$RUNNER_TEMP/manifest-error"; then
+            echo "Release tag already exists: $image" >&2
+            exit 1
+          elif ! grep -Eqi 'no such manifest|manifest unknown|name unknown|not found' "$RUNNER_TEMP/manifest-error"; then
+            cat "$RUNNER_TEMP/manifest-error" >&2
+            exit 1
+          fi
+          docker tag atc-tools:verified "$image"
+          docker push "$image"
+          docker image inspect --format '{{index .RepoDigests 0}}' "$image" > dist/image-digest
+          cp deploy/base-image.txt dist/base-image
+          echo "$image" > dist/image-tag
+          echo "Verified image: $image" >> "$GITHUB_STEP_SUMMARY"
+          if [[ $GITHUB_REF_TYPE == tag ]]; then
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "$GITHUB_REF_NAME" --notes "Tested ARM64 image: $image"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: inputs.publish
+        with:
+          name: release-receipt
+          path: dist/
+          if-no-files-found: error

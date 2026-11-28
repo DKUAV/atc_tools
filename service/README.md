@@ -9,79 +9,39 @@ ATC Tools Service provides a browser workbench and a bearer-token HTTP API for O
 
 ## Contents
 
+- [Prepare Images](#prepare-images)
 - [Quick Start (Simulation Mode)](#quick-start-simulation-mode)
 - [Using the Web Workbench](#using-the-web-workbench)
 - [Enabling Real Ascend Toolchains](#enabling-real-ascend-toolchains)
 - [Using the HTTP API](#using-the-http-api)
 - [Running Smoke Tests](#running-smoke-tests)
-- [GitHub Actions & Published Images](#github-actions--published-images)
+- [GitHub Actions](#github-actions)
 
 ---
 
+## Prepare Images
+
+Use the released Linux ARM64 application image. Copy deploy/lab.env.example to lab.env, specifying the exact application tag, a local data directory and the root-owned SSH public key directory containing authorized_keys. See the [offline deployment guide](../deploy/OFFLINE.md).
+
 ## Quick Start (Simulation Mode)
 
-Simulation mode (`ATC_SIMULATE_COMPILE=1`) lets you run the full 310B4 and 910B2 workflows locally without Ascend hardware.
-
-Run the following commands from the **repository root** on a Linux host with Docker and Docker Compose.
-
-### 1. Set Environment Variables
+Set ATC_SIMULATE_COMPILE=1 in lab.env. For local HTTP browser tests set ATC_BROWSER_SECURE_COOKIES=0.
 
 ```bash
-export ATC_DB_PASSWORD="$(openssl rand -hex 24)"
-export ATC_HOST_DATA_DIR="$PWD/work/service-data"
-export ATC_SIMULATE_COMPILE=1
-export ATC_BROWSER_SECURE_COOKIES=0   # Required for local HTTP browser login
-mkdir -p "$ATC_HOST_DATA_DIR"
+docker compose --env-file lab.env -f deploy/compose.yaml up -d --no-build --pull never --wait
 ```
-
-### 2. Prepare Images
-
-Choose one of the two options below:
-
-**Option A: Pull the prebuilt service image from GitHub (Recommended on ARM64)**
-
-The `api` and `worker` services share the published image on GitHub Container Registry (`ghcr.io/dkuav/atc-tools-service`). Check out the matching version tag (e.g., `v0.1.0`), pull and tag the service image, then build the lightweight CPU executor:
-
-```bash
-docker pull ghcr.io/dkuav/atc-tools-service:v0.1.0
-docker tag ghcr.io/dkuav/atc-tools-service:v0.1.0 atc-service:local
-
-docker compose -f deploy/compose.yaml --profile build build executor
-```
-
-**Option B: Build all images locally from source (Development / non-ARM64 hosts)**
-
-If you are modifying the service code or running on an x86_64 host, build both the service image and the CPU executor locally:
-
-```bash
-docker compose -f deploy/compose.yaml --profile build build api executor
-```
-
-### 3. Start the Service
-
-```bash
-docker compose -f deploy/compose.yaml up -d --no-build
-```
-
-- **Default address**: `http://127.0.0.1:8766` (override the host port with `ATC_API_PORT`)
-- **OpenAPI schema**: `http://127.0.0.1:8766/openapi.json`
-- **Readiness check**: `http://127.0.0.1:8766/readyz`
-
-> **Docker Desktop for Windows**: Set `ATC_HOST_DATA_DIR` to the Windows bind path and `ATC_DOCKER_DATA_DIR` to the same directory as seen by the Linux daemon. For example:
-> - `ATC_HOST_DATA_DIR=D:/atc-tools-data`
-> - `ATC_DOCKER_DATA_DIR=/run/desktop/mnt/host/d/atc-tools-data`
 
 ### Common Management Commands
 
 ```bash
 # Stop services (keeps the database volume and stored files)
-docker compose -f deploy/compose.yaml down
+docker compose --env-file lab.env -f deploy/compose.yaml down
 
 # Issue an API bearer token for a user
-docker compose -f deploy/compose.yaml exec -T api atc-service issue-token alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice
 
 # Revoke a token via a private prompt
-docker compose -f deploy/compose.yaml exec api atc-service revoke-token
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service revoke-token
 ```
 
 ---
@@ -93,7 +53,7 @@ docker compose -f deploy/compose.yaml exec api atc-service revoke-token
 Set a password for a local account using the interactive prompt. Setting a new password automatically ends all existing browser sessions for that account.
 
 ```bash
-docker compose -f deploy/compose.yaml exec api atc-service set-browser-password alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service set-browser-password alice
 ```
 
 Then open `http://127.0.0.1:8766/` in your browser and sign in.
@@ -151,48 +111,16 @@ For full UI specifications, see [Web UI Requirements](../docs/web-ui-requirement
 
 ## Enabling Real Ascend Toolchains
 
-### 1. Build the Ascend Executor Image
+The image includes CANN. Set ATC_SIMULATE_COMPILE=0 and configure ATC_AMCT_TARGETS for validated SoCs. For 910B2 inference and profiling set ATC_RUNTIME=ascend and ATC_910B2_DEVICE. Reserve the device throughout each capture, including SSH and external jobs.
 
-On an Ascend-compatible host, build the executor image from a locally provisioned `ascend-atc` base image that includes the matching CANN Toolkit and ops packages for your target chip:
-
-```bash
-docker build -f deploy/Dockerfile.ascend-executor \
-  --build-arg ASCEND_ATC_IMAGE=ascend-atc:8.5.0-910b-ubuntu22.04-py3.11 \
-  -t atc-executor:910b2 .
-```
-
-### 2. Configure Environment Variables
-
-Leave `ATC_SIMULATE_COMPILE=0` and configure the target images and runtime settings before starting Compose:
-
-| Variable | Description |
-| --- | --- |
-| `ATC_SIMULATE_COMPILE` | Set to `0` to use real Ascend toolchains. |
-| `ATC_COMPILE_IMAGE` | Executor image for **310B4** (enables the three floating-point presets). |
-| `ATC_COMPILE_910B2_IMAGE` | Executor image for **910B2** (enables the three floating-point presets). |
-| `ATC_AMCT_TARGETS` | Comma-separated targets with INT8 enabled (list each target after verifying AMCT calibration and ATC deployment conversion). |
-| `ATC_910B2_DEVICE` | Host device ID (e.g. `0`) to enable on-device inference, comparison, and profiling on 910B2. |
-| `ATC_CPU_SLOTS` | Concurrent CPU task slots (default: `2`). |
-| `ATC_COMPILE_SLOTS` | Concurrent compile task slots (default: `1`). |
-| `ATC_SCRATCH_BYTES` | Temporary workspace size limit for each workflow container. |
-
-> **Host requirements**: The Docker daemon must have the `ascend` runtime configured, and executor UID `10001` must have permission to access the configured NPU device and profiling facilities. Real toolchain execution and non-root device access require lab-host validation.
-
-### 3. Precision, Quantization & Profiling Details
+### 2. Precision, Quantization & Profiling Details
 
 - **Floating-point presets**: Mapped to ATC `--precision_mode_v2` ([ATC precision modes](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/850/devaids/atctool/atlasatcparam_16_0069.html)).
 - **INT8 quantization**: Uses the AMCT default activation algorithm with the number of supplied calibration batches ([AMCT configuration](https://www.hiascend.com/document/detail/en/canncommercial/850/devaids/amct/atlasamct_16_0163.html)).
 - **Accuracy comparison**: Compares against CPU ONNX reference outputs; for INT8, also compares against a same-device original-precision OM baseline.
 - **Profiling (`msprof`)**: Runs the primary OM with the shared validation inputs and archives the collected data ([CANN 8.5 runtime profiling](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/850/devaids/profiling/atlasprofiling_16_0011.html)). Open `profiling.json` inside the archive for input count, profiler wall-clock duration, and collection size; use the native `msprof` files inside the archive for device timing.
 
-### 4. Concurrency, Readiness & Offline Rollout
-
-- The worker holds a single coordinator lock and schedules independent **CPU**, **compiler**, and **device** queues (1 slot for the configured 910B2 device).
-- Workflows compile the primary OM (and any floating-point baseline) before requesting the device slot, preserving the same task ID across both phases.
-- Query `/readyz` to verify worker and executor image availability.
-- For air-gapped deployments, see the [Offline Bundle and Rollout Guide](../deploy/OFFLINE.md).
-
----
+Inference, device comparisons and profiling share one device slot. The readiness endpoint checks SQLite, scheduler heartbeat and enabled tools.
 
 ## Using the HTTP API
 
@@ -254,8 +182,8 @@ All three smoke test suites run against a local simulation deployment (`ATC_SIMU
 Issue two test tokens and run `smoke.py` (uploads a generated ONNX, checks multi-account isolation, failure logs, and simulated downloads) and `delivery_smoke.py` (standalone operations, phased logs, and retry):
 
 ```bash
-export ATC_SMOKE_TOKEN_A="$(docker compose -f deploy/compose.yaml exec -T api atc-service issue-token alice)"
-export ATC_SMOKE_TOKEN_B="$(docker compose -f deploy/compose.yaml exec -T api atc-service issue-token bob)"
+export ATC_SMOKE_TOKEN_A="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice)"
+export ATC_SMOKE_TOKEN_B="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token bob)"
 
 uv run --locked python service/tests/smoke.py
 uv run --locked python service/tests/delivery_smoke.py
@@ -282,9 +210,6 @@ uv run --locked python service/tests/browser_smoke.py
 
 ---
 
-## GitHub Actions & Published Images
+## GitHub Actions
 
-- **ARM64 Service CI**: Runs static checks, unit tests, and all three Compose simulation suites on pull requests and pushes to `master`. Pushing a version tag (e.g. `v0.1.0`) runs the same checks and publishes the image to `ghcr.io/dkuav/atc-tools-service:v0.1.0`. The first publication requires setting the package visibility to public in GitHub Packages ([GitHub Container Registry docs](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)).
-- **Using a published image**: See [Option A in Quick Start](#2-prepare-images) to pull a tagged image from GHCR and tag it as `atc-service:local` (used by both `api` and `worker`), then build the CPU executor from the matching source tag.
-- **MobileNetV2 Ascend compilation** *(manual workflow in Actions tab)*: Runs a real ARM64 compiler check using a pinned [ONNX Model Zoo MobileNetV2 model](https://github.com/onnx/models/blob/4c46cd00fbdb7cd30b6c1c17ab54f2e1f4f7b177/validated/vision/classification/mobilenet/README.md) with deterministic calibration tensors, verifying original-precision and INT8 OM downloads for both 310B4 and 910B2 while retaining logs and build metadata. Device inference and profiling are covered by laboratory acceptance.
-- **Offline archive check**: In the same workflow, select `offline` to verify the simulator archive, reload its ARM64 images, and start the copied Compose configuration with `--pull never` (or select `all` to run both checks). See the [Offline Bundle and Rollout Guide](../deploy/OFFLINE.md) to prepare the complete bundle with the shared CANN executor.
+ARM64 CI verifies SSH, simulation and real floating-point and INT8 compilation for both SoCs. Release builds reuse the verified candidate wheels. [Offline deployment guide](../deploy/OFFLINE.md)

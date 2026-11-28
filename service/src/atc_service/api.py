@@ -6,6 +6,7 @@ from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from secrets import compare_digest
+from sqlite3 import DatabaseError
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
@@ -15,7 +16,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
-from psycopg import Error as DatabaseError
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -116,7 +116,7 @@ class BrowserTask(BaseModel):
 
 
 def create_app(settings: Settings) -> FastAPI:
-    """Register routes using explicit settings and a PostgreSQL store.
+    """Register routes using explicit settings and a local SQLite store.
 
     Parameters
     ----------
@@ -308,10 +308,8 @@ def create_app(settings: Settings) -> FastAPI:
         """
         preset = settings.compile_preset()
         return {
-            "operations": ["inspect_onnx", "compile_om"]
-            if preset
-            else ["inspect_onnx"],
-            "compile_presets": [preset] if preset else [],
+            "operations": ["inspect_onnx", "compile_om"],
+            "compile_presets": [preset],
             "max_upload_bytes": settings.max_upload_bytes,
             "workflow_presets": [preset.public() for preset in presets.values()],
             "standalone_operations": ["run_cpu", "compare_outputs"]
@@ -335,12 +333,12 @@ def create_app(settings: Settings) -> FastAPI:
         Returns
         -------
         JSONResponse
-            HTTP 200 when the database, worker, and configured images are ready.
+            HTTP 200 when SQLite, the scheduler and the configured tools are ready.
         """
         try:
             with store.connect() as db:
                 row = db.execute(
-                    "SELECT checks, heartbeat_at > now() - interval '20 seconds' AS live FROM worker_status"
+                    "SELECT checks, julianday(heartbeat_at) > julianday('now','-20 seconds') AS live FROM worker_status"
                 ).fetchone()
         except DatabaseError:
             return JSONResponse(
@@ -556,16 +554,13 @@ def create_app(settings: Settings) -> FastAPI:
         HTTPException
             The selected preset is disabled or incompatible.
         """
-        image = settings.inspect_image
+        image = settings.runtime
         simulated = False
         if body.operation == "compile_om":
             preset = settings.compile_preset()
-            if preset is None or body.preset != preset["id"]:
+            if body.preset != preset["id"]:
                 raise HTTPException(422, "Select an enabled compile preset.")
             simulated = bool(preset["simulated"])
-            if not simulated:
-                assert settings.compile_image is not None
-                image = settings.compile_image
         elif body.preset is not None:
             raise HTTPException(422, "ONNX inspection takes no compile preset.")
         row = store.submit(
@@ -651,7 +646,7 @@ def create_app(settings: Settings) -> FastAPI:
         with store.connect() as db:
             rows = db.execute(
                 "SELECT j.id, a.filename, j.operation, j.preset, j.state, j.created_at "
-                "FROM jobs j JOIN assets a ON a.id = j.input_id WHERE j.owner = %s "
+                "FROM jobs j JOIN assets a ON a.id = j.input_id WHERE j.owner = ? "
                 "AND j.browser_session_id IS NULL ORDER BY j.created_at DESC, j.id DESC LIMIT 50",
                 (owner,),
             ).fetchall()
@@ -789,7 +784,7 @@ def create_app(settings: Settings) -> FastAPI:
         attempt = row["attempt_id"]
         with store.connect() as db:
             attempts = db.execute(
-                "SELECT id FROM attempts WHERE job_id = %s ORDER BY started_at, id",
+                "SELECT id FROM attempts WHERE job_id = ? ORDER BY started_at, id",
                 (job_id,),
             ).fetchall()
         data = bytearray()
@@ -1030,7 +1025,7 @@ def create_app(settings: Settings) -> FastAPI:
             rows = db.execute(
                 "SELECT j.id, a.filename, j.operation, j.preset, j.state, j.created_at "
                 "FROM jobs j JOIN assets a ON a.id = j.input_id "
-                "WHERE j.owner = %s AND j.browser_session_id IS NOT NULL "
+                "WHERE j.owner = ? AND j.browser_session_id IS NOT NULL "
                 "ORDER BY j.created_at DESC, j.id DESC LIMIT 50",
                 (session.owner,),
             ).fetchall()

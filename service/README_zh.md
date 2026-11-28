@@ -9,79 +9,39 @@ ATC Tools Service 提供浏览器工作台（Web Workbench）和基于 Bearer To
 
 ## 目录
 
+- [准备镜像](#准备镜像)
 - [快速开始（模拟模式）](#快速开始模拟模式)
 - [使用浏览器工作台](#使用浏览器工作台)
 - [接入真实昇腾工具链](#接入真实昇腾工具链)
 - [通过 HTTP API 提交任务](#通过-http-api-提交任务)
 - [运行冒烟测试](#运行冒烟测试)
-- [GitHub Actions 与预构建镜像](#github-actions-与预构建镜像)
+- [GitHub Actions](#github-actions)
 
 ---
 
+## 准备镜像
+
+使用发布的 ARM64 应用镜像。将 deploy/lab.env.example 复制为 lab.env，填写精确镜像标签、本地数据目录，以及含非空 authorized_keys 的 root 专用公钥目录。详见[离线部署指南](../deploy/OFFLINE.md)。
+
 ## 快速开始（模拟模式）
 
-开启模拟模式（`ATC_SIMULATE_COMPILE=1`）后，无需昇腾硬件即可在本地完整体验 310B4 和 910B2 的工作流。
-
-在安装了 Docker 和 Docker Compose 的 Linux 主机上，从**仓库根目录**按以下步骤操作。
-
-### 1. 设置环境变量
+在 lab.env 中设置 ATC_SIMULATE_COMPILE=1。本机 HTTP 浏览器测试应设置 ATC_BROWSER_SECURE_COOKIES=0。
 
 ```bash
-export ATC_DB_PASSWORD="$(openssl rand -hex 24)"
-export ATC_HOST_DATA_DIR="$PWD/work/service-data"
-export ATC_SIMULATE_COMPILE=1
-export ATC_BROWSER_SECURE_COOKIES=0   # 本地 HTTP 调试浏览器登录时需要关闭安全 Cookie
-mkdir -p "$ATC_HOST_DATA_DIR"
+docker compose --env-file lab.env -f deploy/compose.yaml up -d --no-build --pull never --wait
 ```
-
-### 2. 准备镜像
-
-根据你的环境二选一：
-
-**方式 A：从 GitHub 拉取现成服务镜像（ARM64 环境推荐）**
-
-`api` 和 `worker` 共用发布在 GitHub Container Registry（`ghcr.io/dkuav/atc-tools-service`）的预构建镜像。先检出对应的版本标签（例如 `v0.1.0`），拉取并打标为 `atc-service:local`，再构建轻量的 CPU 执行器镜像：
-
-```bash
-docker pull ghcr.io/dkuav/atc-tools-service:v0.1.0
-docker tag ghcr.io/dkuav/atc-tools-service:v0.1.0 atc-service:local
-
-docker compose -f deploy/compose.yaml --profile build build executor
-```
-
-**方式 B：从源码本地构建全部镜像（本地开发或非 ARM64 主机）**
-
-如果你需要修改服务代码，或在 x86_64 主机上运行，请直接从源码构建服务镜像与 CPU 执行器镜像：
-
-```bash
-docker compose -f deploy/compose.yaml --profile build build api executor
-```
-
-### 3. 启动服务
-
-```bash
-docker compose -f deploy/compose.yaml up -d --no-build
-```
-
-- **默认地址**：`http://127.0.0.1:8766`（可通过 `ATC_API_PORT` 修改宿主机端口）
-- **OpenAPI 文档**：`http://127.0.0.1:8766/openapi.json`
-- **就绪检查**：`http://127.0.0.1:8766/readyz`
-
-> **Docker Desktop for Windows 说明**：请将 `ATC_HOST_DATA_DIR` 设为 Windows 宿主机挂载路径，将 `ATC_DOCKER_DATA_DIR` 设为 Linux Docker 守护进程看到的同一目录路径。例如：
-> - `ATC_HOST_DATA_DIR=D:/atc-tools-data`
-> - `ATC_DOCKER_DATA_DIR=/run/desktop/mnt/host/d/atc-tools-data`
 
 ### 常用管理命令
 
 ```bash
 # 停止服务（保留数据库卷和本地数据文件）
-docker compose -f deploy/compose.yaml down
+docker compose --env-file lab.env -f deploy/compose.yaml down
 
 # 为用户签发 API Bearer Token
-docker compose -f deploy/compose.yaml exec -T api atc-service issue-token alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice
 
 # 通过交互式提示吊销 Token
-docker compose -f deploy/compose.yaml exec api atc-service revoke-token
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service revoke-token
 ```
 
 ---
@@ -93,7 +53,7 @@ docker compose -f deploy/compose.yaml exec api atc-service revoke-token
 通过交互式命令为本地账号设置密码。重置密码会自动结束该账号现有的浏览器会话。
 
 ```bash
-docker compose -f deploy/compose.yaml exec api atc-service set-browser-password alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service set-browser-password alice
 ```
 
 随后在浏览器中打开 `http://127.0.0.1:8766/` 即可登录使用。
@@ -151,48 +111,16 @@ PY
 
 ## 接入真实昇腾工具链
 
-### 1. 构建昇腾执行器镜像
+应用镜像内置 CANN。设置 ATC_SIMULATE_COMPILE=0，按已验证的 SoC 配置 ATC_AMCT_TARGETS。910B2 推理和性能采集需设置 ATC_RUNTIME=ascend 和 ATC_910B2_DEVICE。为目标 NPU 预留独占窗口，包括 SSH 用户和其他容器的负载。
 
-在兼容昇腾的宿主机上，基于本地准备好的 `ascend-atc` 基础镜像构建执行器镜像（基础镜像需包含与目标芯片匹配的 CANN Toolkit 和算子包）：
-
-```bash
-docker build -f deploy/Dockerfile.ascend-executor \
-  --build-arg ASCEND_ATC_IMAGE=ascend-atc:8.5.0-910b-ubuntu22.04-py3.11 \
-  -t atc-executor:910b2 .
-```
-
-### 2. 配置环境变量
-
-保持 `ATC_SIMULATE_COMPILE=0`，并在启动 Compose 前配置目标镜像与运行参数：
-
-| 环境变量 | 说明 |
-| --- | --- |
-| `ATC_SIMULATE_COMPILE` | 设为 `0` 以启用真实昇腾工具链。 |
-| `ATC_COMPILE_IMAGE` | **310B4** 执行器镜像（配置后启用 3 种浮点精度预设）。 |
-| `ATC_COMPILE_910B2_IMAGE` | **910B2** 执行器镜像（配置后启用 3 种浮点精度预设）。 |
-| `ATC_AMCT_TARGETS` | 启用 INT8 量化的目标列表（需先针对各目标验证 AMCT 校准和 ATC 部署转换）。 |
-| `ATC_910B2_DEVICE` | 宿主机 910B2 设备编号（例如 `0`），用于开启板端推理、精度对比和性能分析。 |
-| `ATC_CPU_SLOTS` | CPU 任务并发槽位数（默认 `2`）。 |
-| `ATC_COMPILE_SLOTS` | 编译任务并发槽位数（默认 `1`）。 |
-| `ATC_SCRATCH_BYTES` | 每个工作流容器的临时工作空间大小上限。 |
-
-> **宿主机要求**：Docker 守护进程需要配置 `ascend` 运行时，且执行器 UID `10001` 需具备访问指定 NPU 设备和 Profiling 功能的权限。真实工具链和非 root 运行时访问权限需在实验室宿主机上完成验证。
-
-### 3. 精度模式、量化与性能分析说明
+### 2. 精度模式、量化与性能分析说明
 
 - **浮点精度预设**：对应 ATC 的 `--precision_mode_v2` 参数（[ATC 精度模式文档](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/850/devaids/atctool/atlasatcparam_16_0069.html)）。
 - **INT8 量化**：使用 AMCT 默认激活量化算法，校准批次数由上传的校准数据集决定（[AMCT 配置文档](https://www.hiascend.com/document/detail/en/canncommercial/850/devaids/amct/atlasamct_16_0163.html)）。
 - **精度对比**：使用 CPU ONNX 参考输出进行对比；对于 INT8 模型，还会与同设备上的原始精度 OM 基线进行对比。
 - **性能分析（`msprof`）**：使用共享验证集运行主 OM 并打包采集结果（[CANN 8.5 运行时 Profiling 文档](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/850/devaids/profiling/atlasprofiling_16_0011.html)）。查看压缩包内的 `profiling.json` 可获取输入数量、总耗时和采集体积；设备侧详细耗时请查看压缩包内的原生 `msprof` 文件。
 
-### 4. 并发调度、就绪检查与离线部署
-
-- Worker 持有单个协调锁，并维护独立的 **CPU**、**编译** 和 **设备** 队列（已配置的 910B2 设备占用 1 个槽位）。
-- 工作流会先完成主 OM（以及所需的浮点基线）编译，再申请设备槽位，两个阶段保持同一个任务 ID。
-- 访问 `/readyz` 可检查 Worker 和执行器镜像的可用状态。
-- 离线打包与部署流程见[离线包与上线指南](../deploy/OFFLINE.md)。
-
----
+推理、精度比对的上卡步骤和 msprof 共用一个设备槽位。/readyz 检查 SQLite、调度器和已启用的工具链。
 
 ## 通过 HTTP API 提交任务
 
@@ -254,8 +182,8 @@ docker build -f deploy/Dockerfile.ascend-executor \
 签发两个测试 Token，依次运行 `smoke.py`（上传生成的小型 ONNX、测试双账号隔离、失败日志及模拟产物下载）和 `delivery_smoke.py`（端到端测试独立操作、分阶段日志和失败重试）：
 
 ```bash
-export ATC_SMOKE_TOKEN_A="$(docker compose -f deploy/compose.yaml exec -T api atc-service issue-token alice)"
-export ATC_SMOKE_TOKEN_B="$(docker compose -f deploy/compose.yaml exec -T api atc-service issue-token bob)"
+export ATC_SMOKE_TOKEN_A="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice)"
+export ATC_SMOKE_TOKEN_B="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token bob)"
 
 uv run --locked python service/tests/smoke.py
 uv run --locked python service/tests/delivery_smoke.py
@@ -282,9 +210,6 @@ uv run --locked python service/tests/browser_smoke.py
 
 ---
 
-## GitHub Actions 与预构建镜像
+## GitHub Actions
 
-- **ARM64 服务 CI**：在 Pull Request 和推送至 `master` 时自动运行静态检查、单元测试以及上述三套 Compose 模拟测试。推送版本标签（如 `v0.1.0`）时，在通过同样检查后会将服务镜像发布到 `ghcr.io/dkuav/atc-tools-service:v0.1.0`。首次发布需要在 GitHub Packages 中将包可见性设为 public（[GitHub Container Registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)）。
-- **使用已发布镜像**：见[快速开始中的方式 A](#2-准备镜像)，从 GHCR 拉取指定版本并打标为 `atc-service:local`（`api` 和 `worker` 共用），再基于对应源码标签构建 CPU 执行器。
-- **MobileNetV2 昇腾真实编译检查** *（在 Actions 页面手动触发）*：原生 ARM64 CI 会下载并校验固定版本的 [ONNX Model Zoo MobileNetV2 模型](https://github.com/onnx/models/blob/4c46cd00fbdb7cd30b6c1c17ab54f2e1f4f7b177/validated/vision/classification/mobilenet/README.md)，上传确定性校准张量，并验证 310B4 和 910B2 的原始精度与 INT8 OM 下载，同时保留各目标与精度的日志及构建元数据。板端推理与性能分析由实验室验收覆盖。
-- **离线包验证**：在同一工作流中选择 `offline`，可验证模拟器离线归档、重新加载 ARM64 镜像并使用 `--pull never` 启动复制的 Compose 配置；选择 `all` 则同时运行两项检查。准备包含共享 CANN 执行器的完整离线包见[离线包与上线指南](../deploy/OFFLINE.md)。
+ARM64 CI 验证 SSH、模拟服务、310B4 和 910B2 的浮点与 INT8 编译。发布流程使用验证过的候选 wheel。[离线部署指南](../deploy/OFFLINE.md)
