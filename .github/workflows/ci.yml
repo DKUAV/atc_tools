@@ -31,8 +31,9 @@ jobs:
           uv sync --locked --project service
           service_packages=$(uv run --locked --project service python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
           uv run --locked ruff check src service/src service/tests tests
-          uv run --locked ty check --extra-search-path "$service_packages" src service/src service/tests tests
+          uv run --locked ty check --extra-search-path "$service_packages" --extra-search-path service/src src service/src service/tests tests
           uv run --locked pytest -q tests
+          uv run --locked --project service python -m unittest discover -s service/tests -p 'test_*.py'
           node --check service/src/atc_service/web/workbench.js
       - name: Run Compose simulation tests
         run: bash scripts/ci/service-smoke.sh simulate

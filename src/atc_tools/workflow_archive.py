@@ -38,7 +38,8 @@ def unpack_results(source: Path, root: Path, limit: int) -> bool:
     source, root
         Owned tensor archive and private extraction destination.
     limit
-        Maximum aggregate uncompressed bytes.
+        Maximum total uncompressed bytes of tensors and sample manifests.
+        The top-level archive manifest has its own size limit.
 
     Returns
     -------
@@ -48,9 +49,12 @@ def unpack_results(source: Path, root: Path, limit: int) -> bool:
     with ZipFile(source) as archive:
         members = archive.infolist()
         names = {entry.filename for entry in members}
+        payload_size = sum(
+            entry.file_size for entry in members if entry.filename != "manifest.json"
+        )
         if (
             len(names) != len(members)
-            or sum(entry.file_size for entry in members) > limit
+            or payload_size > limit
             or "manifest.json" not in names
         ):
             raise ValueError("Invalid or oversized tensor archive.")

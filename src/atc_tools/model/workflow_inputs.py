@@ -135,7 +135,8 @@ def _geometry(
     Raises
     ------
     ValueError
-        Source batch or channels differ, or padding would need to crop.
+        Source batch or channels differ, padding would crop, or geometry would
+        lose precision in an integer source tensor.
     """
     source = np.moveaxis(array, axis, -1)
     axes = [index for index in range(len(shape)) if index != axis]
@@ -151,12 +152,26 @@ def _geometry(
         new_h, new_w = max(1, round(src_h * scale)), max(1, round(src_w * scale))
     if new_h > height or new_w > width:
         raise ValueError("Pad requires the input to fit inside the target.")
+    resize = (src_h, src_w) != (new_h, new_w)
+    if not resize and (new_h, new_w) == (height, width):
+        return array
     top, left = (height - new_h) // 2, (width - new_w) // 2
     batch = source[None, ...] if source.ndim == 3 else source
-    # Resize in floating point to preserve fractional values until numerical processing.
-    result = np.full((batch.shape[0], height, width, channels), fill, dtype=np.float64)
+    dtype = np.dtype(np.float64)
+    if not resize and source.dtype.kind in "biu":
+        bounds = np.iinfo(source.dtype.name) if source.dtype.kind != "b" else None
+        lo, hi = (bounds.min, bounds.max) if bounds is not None else (0, 1)
+        integer_fill = int(fill)
+        if fill == integer_fill and lo <= integer_fill <= hi:
+            dtype = source.dtype
+    if dtype.kind == "f" and source.dtype.kind in "iu" and source.dtype.itemsize == 8:
+        with np.errstate(invalid="ignore"):
+            restored = source.astype(np.float64).astype(source.dtype)
+        if np.any(restored != source):
+            raise ValueError("Geometry would lose precision in the integer samples.")
+    result = np.full((batch.shape[0], height, width, channels), fill, dtype=dtype)
     for index, sample in enumerate(batch):
-        if (src_h, src_w) != (new_h, new_w):
+        if resize:
             resize_source = sample.astype(np.float64)
             sample = cv2.resize(
                 resize_source, (new_w, new_h), interpolation=cv2.INTER_LINEAR
