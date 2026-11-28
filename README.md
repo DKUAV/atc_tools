@@ -61,7 +61,7 @@ bash scripts/install_amct.sh <CANN_version>
 
 ## 2. 检查模型
 
-### 2.2 模型检查与生成 CPU 参考输出
+### 2.1 模型检查与生成 CPU 参考输出
 
 ```bash
 # Inspect model inputs, outputs, and external weights.
@@ -225,8 +225,71 @@ bash scripts/compile.sh --model work/model.onnx --soc "$TARGET_SOC" \
 
 **在目标机上验收。** 将 `model.om`、验证输入和 CPU 参考输出复制到目标 310，按第 3.1 节运行并对比输出。部署 INT8 时，再按第 3.2 节用同一验证集比较目标机上的浮点版和 INT8 版，记录精度和性能。 [推理与输出对比](#校验模型结果) · [量化验收](#验证量化结果)
 
-## 5. 更多
+## 5. 服务部署与使用
 
+除命令行 `atc_tools` 外，本仓库还提供容器化的 `atc_service` 服务，通过浏览器工作台（Web Workbench）和 HTTP API 完成 ONNX 检查、OM 编译、INT8 量化、推理、精度对比与 `msprof` 性能分析。完整配置、真实昇腾接入与冒烟测试见[服务使用指南](docs/service-guide.zh.md)，离线包导入与升级见[离线部署指南](deploy/README.md)。
+
+### 5.1 部署与启停服务
+
+复制 [deploy/lab.env.example](deploy/lab.env.example) 为 `lab.env`，按环境填写 `ATC_APP_IMAGE`、`ATC_HOST_DATA_DIR` 和 `SSH_CONFIG_DIR`（包含非空 `authorized_keys` 的 root 专用目录）。
+
+- **本地模拟体验**：在 `lab.env` 中设置 `ATC_SIMULATE_COMPILE=1`（无需昇腾硬件），本机 HTTP 浏览器测试设置 `ATC_BROWSER_SECURE_COOKIES=0`。
+- **真实昇腾环境**：保持 `ATC_SIMULATE_COMPILE=0`，按已验证目标配置 `ATC_AMCT_TARGETS`；启用 910B2 设备推理与性能分析需设置 `ATC_RUNTIME=ascend` 和 `ATC_910B2_DEVICE`。 [接入真实昇腾工具链](docs/service-guide.zh.md#接入真实昇腾工具链)
+
+```bash
+# 启动服务（--wait 会等待容器通过 /readyz 健康检查）
+docker compose --env-file lab.env -f deploy/compose.yaml up -d --no-build --pull never --wait
+
+# 停止服务（保留数据目录）
+docker compose --env-file lab.env -f deploy/compose.yaml down
+```
+
+### 5.2 使用 Web 工作台
+
+先为浏览器账号设置或重置密码（仅使用 Web 工作台时无需签发 API Token）：
+
+```bash
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc_service set-browser-password alice
+```
+
+服务默认监听 `http://127.0.0.1:8766/`，使用上述账号密码登录。实验室或内网部署请通过 HTTPS 反向代理提供访问，并保持 `ATC_BROWSER_SECURE_COOKIES=1`。
+
+1. 上传 ONNX 模型并等待自动检查完成。
+2. 选择目标芯片（如 `310B4`、`910B2`）和精度预设（`original`、`mixed Float16`、`preferred FP16`、`INT8`）。
+3. 按需上传数据集：选择 `INT8` 时上传校准集，选择 `910B2` 且开启精度对比或 `msprof` 性能分析时上传验证集（支持图片、`.npy`、`.bin`，单数据集最多 128 个样本）。
+4. 提交任务后查看分阶段日志与状态，完成后下载 OM、`accuracy.json` 或 `profiling.zip` 等产物；可选验证阶段失败时可直接重试。
+
+浏览器会话默认有效期为 12 小时，下载完所需产物后建议及时退出登录，以便及时清理会话文件。 [Web 工作台详情](docs/service-guide.zh.md#使用浏览器工作台)
+
+### 5.3 通过 HTTP API 提交任务
+
+调用 HTTP API 需要先签发 Bearer Token（按需也可吊销）：
+
+```bash
+# 签发 API Bearer Token
+docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token alice
+
+# 吊销 Token（交互式选择）
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc_service revoke-token
+```
+
+所有 API 请求均需携带 `Authorization: Bearer <token>` 请求头，传入稳定的 `Idempotency-Key` 可在中断时安全恢复任务，完整字段定义见 `GET /openapi.json`。上传模型后需先提交 `inspect_onnx` 检查任务，检查通过后再提交工作流或独立操作。
+
+| 步骤 | 接口 | 说明 |
+| --- | --- | --- |
+| 查询能力 | `GET /v1/capabilities` | 获取可用预设、`workflow_presets` 和 `standalone_operations` |
+| 上传模型 | `POST /v1/assets?filename=model.onnx` | 以 `application/octet-stream` 上传模型，获取 `input_id` |
+| 上传数据集 | `POST /v1/dataset-files?filename=sample.npy` | 按需上传校准或验证样本文件，返回数据集资产 ID |
+| 提交工作流 | `POST /v1/workflows` | 基于已检查的 `model_id` 提交完整转换、量化与验证流程 |
+| 提交独立操作 | `POST /v1/operations` | 执行单步操作（`quantize_onnx`、`compile_om`、`run_cpu`、`run_npu`、`compare_outputs`、`profile_om`） |
+| 轮询与日志 | `GET /v1/jobs/{job_id}` / `GET /v1/jobs/{job_id}/logs` | 查询任务状态与产物 ID，或传入 `next_offset` 增量读取日志 |
+| 重试与下载 | `POST /v1/jobs/{job_id}/retry` / `GET /v1/assets/{asset_id}/download` | 重试 `compare` 或 `profile` 阶段，或下载任务产物 |
+
+更详细的请求体示例和调用步骤见[通过 HTTP API 提交任务](docs/service-guide.zh.md#通过-http-api-提交任务)。
+
+## 6. 更多
+
+- [服务使用指南](docs/service-guide.zh.md)与[离线部署指南](deploy/README.md)
 - [YOLO 单图示例](docs/deployment-guide.md#yolo-单图示例)
 - [ais_bench 推理](docs/deployment-guide.md#用-ais_bench-的-python-api-执行-om)
 - [排障](docs/deployment-guide.md#排障)与[本地开发检查](docs/deployment-guide.md#本地开发检查)

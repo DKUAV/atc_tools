@@ -21,7 +21,7 @@ ATC Tools Service provides a browser workbench and a bearer-token HTTP API for O
 
 ## Prepare Images
 
-Use the released Linux ARM64 application image. Copy deploy/lab.env.example to lab.env, specifying the exact application tag, a local data directory and the root-owned SSH public key directory containing authorized_keys. See the [offline deployment guide](../deploy/OFFLINE.md).
+Use the released Linux ARM64 application image. Copy deploy/lab.env.example to lab.env, specifying the exact application tag, a local data directory and the root-owned SSH public key directory containing authorized_keys. See the [offline deployment guide](../deploy/README.md).
 
 ## Quick Start (Simulation Mode)
 
@@ -212,4 +212,4 @@ uv run --locked python tests/service/browser_smoke.py
 
 ## GitHub Actions
 
-ARM64 CI verifies SSH, simulation and real floating-point and INT8 compilation for both SoCs. Release builds reuse the verified candidate wheel. [Offline deployment guide](../deploy/OFFLINE.md)
+ARM64 CI verifies SSH, simulation and real floating-point and INT8 compilation for both SoCs. Release builds reuse the verified candidate wheel. [Offline deployment guide](../deploy/README.md)

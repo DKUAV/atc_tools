@@ -21,7 +21,7 @@ ATC Tools Service 提供浏览器工作台（Web Workbench）和基于 Bearer To
 
 ## 准备镜像
 
-使用发布的 ARM64 应用镜像。将 deploy/lab.env.example 复制为 lab.env，填写精确镜像标签、本地数据目录，以及含非空 authorized_keys 的 root 专用公钥目录。详见[离线部署指南](../deploy/OFFLINE.md)。
+使用发布的 ARM64 应用镜像。将 deploy/lab.env.example 复制为 lab.env，填写精确镜像标签、本地数据目录，以及含非空 authorized_keys 的 root 专用公钥目录。详见[离线部署指南](../deploy/README.md)。
 
 ## 快速开始（模拟模式）
 
@@ -212,4 +212,4 @@ uv run --locked python tests/service/browser_smoke.py
 
 ## GitHub Actions
 
-ARM64 CI 验证 SSH、模拟服务、310B4 和 910B2 的浮点与 INT8 编译。发布流程使用验证过的候选 wheel。[离线部署指南](../deploy/OFFLINE.md)
+ARM64 CI 验证 SSH、模拟服务、310B4 和 910B2 的浮点与 INT8 编译。发布流程使用验证过的候选 wheel。[离线部署指南](../deploy/README.md)
