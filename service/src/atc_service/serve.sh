@@ -5,6 +5,17 @@ umask 077
 data_dir=${ATC_DATA_DIR:-/data}
 install -d -m 0711 -o 10001 -g 10001 "$data_dir" "$data_dir/runs"
 install -d -m 0700 -o 10001 -g 10001 "$data_dir/assets" "$data_dir/uploads" "$data_dir/service-logs"
+# CANN resolves the effective UID through passwd during compiler initialization.
+slots=$(( ${ATC_CPU_SLOTS:-2} + ${ATC_COMPILE_SLOTS:-1} + 1 ))
+for (( slot=0; slot<slots; slot++ )); do
+    uid=$((20000 + slot))
+    name=atc-slot-$uid
+    if ! getent passwd "$name" >/dev/null; then
+        groupadd --gid "$uid" "$name"
+        useradd --uid "$uid" --gid "$uid" --no-create-home --home-dir /nonexistent \
+            --shell /usr/sbin/nologin "$name"
+    fi
+done
 service=(setpriv --reuid=10001 --regid=10001 --clear-groups)
 caps=+setuid,+setgid,+chown,+dac_override,+fowner,+kill
 "${service[@]}" --inh-caps="$caps" --ambient-caps="$caps" -- atc-service scheduler &

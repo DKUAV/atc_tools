@@ -613,6 +613,9 @@ def _execute(
         environment = {
             **os.environ,
             "HOME": str(output),
+            "USER": f"atc-slot-{slot_uid}",
+            "LOGNAME": f"atc-slot-{slot_uid}",
+            "ASCEND_PROCESS_LOG_PATH": str(output / "vendor-logs"),
             "TMPDIR": str(output),
             "ATC_TASK_INPUT": str(inputs),
             "ATC_TASK_OUTPUT": str(output),
