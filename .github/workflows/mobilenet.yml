@@ -39,6 +39,7 @@ jobs:
         env:
           ATC_COMPILE_IMAGE: atc-executor:ci-ascend
           ATC_COMPILE_910B2_IMAGE: atc-executor:ci-ascend
+          ATC_MEMORY_BYTES: '8589934592'
         run: |
           uv sync --locked --no-dev
           bash scripts/ci/service-smoke.sh compile "$RUNNER_TEMP/mobilenetv2-12.onnx" "$RUNNER_TEMP/mobilenet-logs"

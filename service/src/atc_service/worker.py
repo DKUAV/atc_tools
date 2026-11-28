@@ -536,6 +536,7 @@ def _execute(
                 "PYTHONUNBUFFERED": "1",
                 "OMP_NUM_THREADS": "1",
                 "OPENBLAS_NUM_THREADS": "1",
+                "TE_PARALLEL_COMPILER": "2",
                 "OPENCV_IO_MAX_IMAGE_PIXELS": "16777216",
                 **(
                     {"ASCEND_VISIBLE_DEVICES": str(settings.ascend_device)}
