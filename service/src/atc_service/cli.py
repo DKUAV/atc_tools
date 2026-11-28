@@ -29,6 +29,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="atc-service")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("serve", help="Start the API and scheduler.")
+    commands.add_parser("init-db", help="Initialize the SQLite database.")
     commands.add_parser("api", help="Start the HTTP API.")
     commands.add_parser("scheduler", help="Schedule local execution processes.")
     issue = commands.add_parser(
@@ -61,6 +62,8 @@ def main() -> int:
     os.umask(0o077)
     store = Store(settings)
     store.migrate()
+    if args.command == "init-db":
+        return 0
     if args.command == "issue-token":
         print(store.issue_token(args.username))
     elif args.command == "set-browser-password":

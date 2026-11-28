@@ -17,6 +17,7 @@ for (( slot=0; slot<slots; slot++ )); do
     fi
 done
 service=(setpriv --reuid=10001 --regid=10001 --clear-groups)
+"${service[@]}" --no-new-privs -- atc-service init-db
 caps=+setuid,+setgid,+chown,+dac_override,+fowner,+kill
 "${service[@]}" --inh-caps="$caps" --ambient-caps="$caps" -- atc-service scheduler &
 scheduler=$!
