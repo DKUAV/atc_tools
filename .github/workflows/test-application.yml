@@ -68,6 +68,12 @@ jobs:
           [[ $base =~ @sha256:[0-9a-f]{64}$ ]]
           docker build -f deploy/Dockerfile.service --build-arg ASCEND_ATC_IMAGE="$base" --build-arg VCS_REF="$GITHUB_SHA" -t "$ATC_APP_IMAGE" .
           bash scripts/ci/compile-mobilenet.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: mobilenet-compilation-logs
+          path: ${{ runner.temp }}/mobilenet-logs/
+          if-no-files-found: ignore
       - name: Verify offline image archive
         env:
           ATC_APP_IMAGE: atc-tools:verified
