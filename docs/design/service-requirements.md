@@ -1,6 +1,6 @@
 # ATC Tools Service Requirements
 
-The laboratory intranet service lets users upload ONNX models, convert them to Ascend OM, and download the results. The first milestone delivers this workflow through an authenticated API. The Web UI follows and uses the same API to present supported choices and assemble workflows. Existing tools provide the model preparation, conversion, inference, and comparison operations. [Deployment guide](deployment-guide.md)
+The laboratory intranet service lets users upload ONNX models, convert them to Ascend OM, and download the results. The first milestone delivers this workflow through an authenticated API. The Web UI follows and uses the same API to present supported choices and assemble workflows. Existing tools provide the model preparation, conversion, inference, and comparison operations. [Deployment guide](../guides/deployment-guide.md)
 
 ## Users and access
 

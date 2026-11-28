@@ -58,9 +58,10 @@ mkdir -- "$output"
 cp -- "$deployment_dir/compose.yaml" "$output/compose.yaml"
 cp -- "$deployment_dir/lab.env.example" "$output/lab.env.example"
 cp -- "$deployment_dir/README.md" "$output/README.md"
+cp -- "$deployment_dir/README_zh.md" "$output/README_zh.md"
 printf '%s\t%s\n' "$image" "$(docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$image")" > "$output/images.txt"
 docker image save --output "$output/images.tar" "$image"
 (
     cd -- "$output"
-    sha256sum compose.yaml lab.env.example README.md images.txt images.tar > SHA256SUMS
+    sha256sum compose.yaml lab.env.example README.md README_zh.md images.txt images.tar > SHA256SUMS
 )

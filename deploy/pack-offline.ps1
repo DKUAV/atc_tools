@@ -73,7 +73,7 @@ $imageMetaText = ($imageMeta | Out-String).Trim()
 
 $resolvedOutput = (New-Item -ItemType Directory -Path $OutputDir).FullName
 
-$bundleFiles = @('compose.yaml', 'lab.env.example', 'README.md')
+$bundleFiles = @('compose.yaml', 'lab.env.example', 'README.md', 'README_zh.md')
 foreach ($name in $bundleFiles) {
     $src = Join-Path $PSScriptRoot $name
     if (-not (Test-Path -LiteralPath $src -PathType Leaf)) {
@@ -91,7 +91,7 @@ if ($LASTEXITCODE -ne 0) {
     Fail "docker image save failed with exit code $LASTEXITCODE"
 }
 
-$checksumFiles = @('compose.yaml', 'lab.env.example', 'README.md', 'images.txt', 'images.tar')
+$checksumFiles = @('compose.yaml', 'lab.env.example', 'README.md', 'README_zh.md', 'images.txt', 'images.tar')
 $checksumLines = foreach ($name in $checksumFiles) {
     $filePath = Join-Path $resolvedOutput $name
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $filePath).Hash.ToLowerInvariant()

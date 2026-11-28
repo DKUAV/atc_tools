@@ -31,4 +31,4 @@ Administrators provision accounts. The API uses server-side browser sessions wit
 
 The scheduler stages inputs, writes the execution request and captures a bounded log. The executor publishes progress and a result manifest in its workspace. The scheduler validates outputs and the current attempt before registering files. Cancellation drains the process group before the device slot is reused.
 
-Reserve the target NPU during profiling. The scheduler serializes service jobs and lab operators coordinate external jobs. See the [deployment guide](../deploy/README.md) for acceptance and release procedures.
+Reserve the target NPU during profiling. The scheduler serializes service jobs and lab operators coordinate external jobs. See the [deployment guide](../../deploy/README.md) for acceptance and release procedures.
