@@ -7,16 +7,17 @@ LABEL org.opencontainers.image.source="https://github.com/DKUAV/atc_tools" \
       org.opencontainers.image.revision=${VCS_REF}
 USER root
 RUN --network=none --mount=type=bind,source=dist,target=/wheels \
-    /opt/onnx/bin/python -I -m pip install --no-index --no-deps /wheels/*.whl \
+    set -- /wheels/atc_tools-*.whl && test "$#" = 1 \
+    && /opt/onnx/bin/python -I -m pip install --no-index "$1[service]" \
     && /opt/onnx/bin/python -I -m pip check \
-    && printf '%s\n' '#!/bin/sh' 'exec /opt/onnx/bin/python -I /opt/onnx/bin/atc-service "$@"' > /usr/local/bin/atc-service \
+    && printf '%s\n' '#!/bin/sh' 'exec /opt/onnx/bin/python -I /opt/onnx/bin/atc_service "$@"' > /usr/local/bin/atc_service \
     && printf '%s\n' '#!/bin/sh' 'case "$1" in om|yolo) exec python3.11 -m atc_tools.cli "$@";; esac' \
        'exec /opt/onnx/bin/python -I -m atc_tools.cli "$@"' > /usr/local/bin/atc_tools \
-    && chmod 0755 /usr/local/bin/atc-service /usr/local/bin/atc_tools \
+    && chmod 0755 /usr/local/bin/atc_service /usr/local/bin/atc_tools \
     && ln -s "$(/opt/onnx/bin/python -I -c 'import atc_tools; print(atc_tools.__path__[0])')" \
        "$(python3.11 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/atc_tools" \
     && python3.11 -c 'import atc_tools.inference.workflow_om' \
     && atc_tools --version && atc_tools om --help > /dev/null \
     && groupadd --gid 10001 atc-service \
     && useradd --uid 10001 --gid 10001 --no-create-home atc-service
-CMD ["atc-service", "serve"]
+CMD ["atc_service", "serve"]

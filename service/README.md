@@ -38,10 +38,10 @@ docker compose --env-file lab.env -f deploy/compose.yaml up -d --no-build --pull
 docker compose --env-file lab.env -f deploy/compose.yaml down
 
 # Issue an API bearer token for a user
-docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token alice
 
 # Revoke a token via a private prompt
-docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service revoke-token
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc_service revoke-token
 ```
 
 ---
@@ -53,7 +53,7 @@ docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service re
 Set a password for a local account using the interactive prompt. Setting a new password automatically ends all existing browser sessions for that account.
 
 ```bash
-docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service set-browser-password alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc_service set-browser-password alice
 ```
 
 Then open `http://127.0.0.1:8766/` in your browser and sign in.
@@ -182,8 +182,8 @@ All three smoke test suites run against a local simulation deployment (`ATC_SIMU
 Issue two test tokens and run `smoke.py` (uploads a generated ONNX, checks multi-account isolation, failure logs, and simulated downloads) and `delivery_smoke.py` (standalone operations, phased logs, and retry):
 
 ```bash
-export ATC_SMOKE_TOKEN_A="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice)"
-export ATC_SMOKE_TOKEN_B="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token bob)"
+export ATC_SMOKE_TOKEN_A="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token alice)"
+export ATC_SMOKE_TOKEN_B="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token bob)"
 
 uv run --locked python service/tests/smoke.py
 uv run --locked python service/tests/delivery_smoke.py
@@ -212,4 +212,4 @@ uv run --locked python service/tests/browser_smoke.py
 
 ## GitHub Actions
 
-ARM64 CI verifies SSH, simulation and real floating-point and INT8 compilation for both SoCs. Release builds reuse the verified candidate wheels. [Offline deployment guide](../deploy/OFFLINE.md)
+ARM64 CI verifies SSH, simulation and real floating-point and INT8 compilation for both SoCs. Release builds reuse the verified candidate wheel. [Offline deployment guide](../deploy/OFFLINE.md)

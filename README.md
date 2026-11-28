@@ -27,7 +27,14 @@ atc_tools --help
 
 默认安装包含 ONNX 模型检查、CPU 参考推理、直接输入图片和 YOLO 示例所需的 Python 依赖。安装时根据 Git 标签和提交生成包版本。 [依赖配置](pyproject.toml)
 
-Python 命令统一使用 `atc_tools`。`onnx` 用于检查模型、生成 CPU 参考输出和准备校准数据，`om` 用于设备推理和输出对比，`yolo` 用于单图检测。
+模型工具使用 `atc_tools` 命令。`onnx` 用于检查模型、生成 CPU 参考输出和准备校准数据，`om` 用于设备推理和输出对比，`yolo` 用于单图检测。
+
+同一个 wheel 也提供 `atc_service` 命令。运行服务需要安装 `service` 可选依赖。在仓库根目录执行：
+
+```bash
+python3 -m pip install -e '.[service]'
+atc_service --help
+```
 
 #### 安装 AMCT
 

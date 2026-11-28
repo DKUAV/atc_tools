@@ -17,11 +17,11 @@ for (( slot=0; slot<slots; slot++ )); do
     fi
 done
 service=(setpriv --reuid=10001 --regid=10001 --clear-groups)
-"${service[@]}" --no-new-privs -- atc-service init-db
+"${service[@]}" --no-new-privs -- atc_service init-db
 caps=+setuid,+setgid,+chown,+dac_override,+fowner,+kill
-"${service[@]}" --inh-caps="$caps" --ambient-caps="$caps" -- atc-service scheduler &
+"${service[@]}" --inh-caps="$caps" --ambient-caps="$caps" -- atc_service scheduler &
 scheduler=$!
-"${service[@]}" --no-new-privs -- atc-service api &
+"${service[@]}" --no-new-privs -- atc_service api &
 api=$!
 trap 'kill "$api" "$scheduler" 2>/dev/null || true' EXIT
 trap 'exit 143' TERM

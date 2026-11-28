@@ -38,10 +38,10 @@ docker compose --env-file lab.env -f deploy/compose.yaml up -d --no-build --pull
 docker compose --env-file lab.env -f deploy/compose.yaml down
 
 # 为用户签发 API Bearer Token
-docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token alice
 
 # 通过交互式提示吊销 Token
-docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service revoke-token
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc_service revoke-token
 ```
 
 ---
@@ -53,7 +53,7 @@ docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service re
 通过交互式命令为本地账号设置密码。重置密码会自动结束该账号现有的浏览器会话。
 
 ```bash
-docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service set-browser-password alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc_service set-browser-password alice
 ```
 
 随后在浏览器中打开 `http://127.0.0.1:8766/` 即可登录使用。
@@ -182,8 +182,8 @@ PY
 签发两个测试 Token，依次运行 `smoke.py`（上传生成的小型 ONNX、测试双账号隔离、失败日志及模拟产物下载）和 `delivery_smoke.py`（端到端测试独立操作、分阶段日志和失败重试）：
 
 ```bash
-export ATC_SMOKE_TOKEN_A="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice)"
-export ATC_SMOKE_TOKEN_B="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token bob)"
+export ATC_SMOKE_TOKEN_A="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token alice)"
+export ATC_SMOKE_TOKEN_B="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token bob)"
 
 uv run --locked python service/tests/smoke.py
 uv run --locked python service/tests/delivery_smoke.py

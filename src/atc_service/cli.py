@@ -9,9 +9,6 @@ import re
 import sys
 from pathlib import Path
 
-import uvicorn
-
-from atc_service.api import create_app
 from atc_service.config import Settings
 from atc_service.logs import configure_logging
 from atc_service.sessions import set_browser_password
@@ -26,7 +23,7 @@ def main() -> int:
     int
         Command exit status.
     """
-    parser = argparse.ArgumentParser(prog="atc-service")
+    parser = argparse.ArgumentParser(prog="atc_service")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("serve", help="Start the API and scheduler.")
     commands.add_parser("init-db", help="Initialize the SQLite database.")
@@ -44,6 +41,16 @@ def main() -> int:
         "revoke-token", help="Revoke a token entered at a private prompt."
     )
     args = parser.parse_args()
+    try:
+        import uvicorn
+
+        from atc_service.api import create_app
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"fastapi", "uvicorn"}:
+            raise
+        parser.error(
+            "Install the service dependencies with: pip install 'atc_tools[service]'"
+        )
     if args.command in ("issue-token", "set-browser-password") and not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", args.username
     ):

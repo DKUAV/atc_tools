@@ -25,18 +25,16 @@ jobs:
       - name: Check source and scheduler contracts
         run: |
           uv sync --locked
-          uv sync --locked --project service
-          uv run --locked ruff check src service/src service/tests tests
+          uv run --locked ruff check src service/tests tests
           uv run --locked ty check
           uv run --locked pytest -q tests
-          uv run --locked --project service python -m unittest discover -s service/tests -p 'test_*.py'
-          node --check service/src/atc_service/web/workbench.js
-      - name: Build candidate wheels
+          uv run --locked python -m unittest discover -s service/tests -p 'test_*.py'
+          node --check src/atc_service/web/workbench.js
+      - name: Build candidate wheel
         if: inputs.wheel_run == ''
         run: |
           export SETUPTOOLS_SCM_PRETEND_VERSION="0.2.0.dev${GITHUB_RUN_NUMBER}+g${GITHUB_SHA:0:12}"
           uv build --wheel
-          uv build --project service --wheel --out-dir "$PWD/dist"
           cd dist
           sha256sum *.whl > SHA256SUMS
           echo "$GITHUB_SHA" > source-commit

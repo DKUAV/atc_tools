@@ -60,21 +60,6 @@ wheels = [
 ]
 
 [[package]]
-name = "atc-service"
-source = { editable = "service" }
-dependencies = [
-    { name = "fastapi", version = "0.162.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "fastapi", version = "0.165.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "uvicorn" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.115,<1" },
-    { name = "uvicorn", specifier = ">=0.34,<1" },
-]
-
-[[package]]
 name = "atc-tools"
 source = { editable = "." }
 dependencies = [
@@ -88,9 +73,16 @@ dependencies = [
     { name = "protobuf" },
 ]
 
+[package.optional-dependencies]
+service = [
+    { name = "fastapi", version = "0.162.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "fastapi", version = "0.165.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "uvicorn" },
+]
+
 [package.dev-dependencies]
 dev = [
-    { name = "atc-service" },
+    { name = "atc-tools", extra = ["service"] },
     { name = "pytest" },
     { name = "ruff" },
     { name = "ty" },
@@ -98,16 +90,19 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", marker = "extra == 'service'", specifier = ">=0.115,<1" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "onnx", specifier = ">=1.16" },
     { name = "onnxruntime", specifier = ">=1.16" },
     { name = "opencv-contrib-python", specifier = ">=4.8" },
     { name = "protobuf" },
+    { name = "uvicorn", marker = "extra == 'service'", specifier = ">=0.34,<1" },
 ]
+provides-extras = ["service"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "atc-service", editable = "service" },
+    { name = "atc-tools", extras = ["service"] },
     { name = "pytest", specifier = ">=9" },
     { name = "ruff", specifier = ">=0.17.1" },
     { name = "ty", specifier = ">=0.0.89" },

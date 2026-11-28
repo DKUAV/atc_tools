@@ -12,15 +12,22 @@ dependencies = [
     "protobuf",
 ]
 
+[project.optional-dependencies]
+service = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.34,<1",
+]
+
 [project.scripts]
 atc_tools = "atc_tools.cli:main"
+atc_service = "atc_service.cli:main"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/atc_tools"]
+packages = ["src/atc_tools", "src/atc_service"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "scripts/_shell.sh" = "atc_tools/scripts/_shell.sh"
@@ -36,14 +43,11 @@ raw-options = { local_scheme = "no-local-version" }
 
 [dependency-groups]
 dev = [
-    "atc-service",
+    "atc_tools[service]",
     "pytest>=9",
     "ruff>=0.17.1",
     "ty>=0.0.89",
 ]
-
-[tool.uv.sources]
-atc-service = { path = "service", editable = true }
 
 [tool.ruff]
 target-version = "py310"
@@ -56,5 +60,5 @@ select = ["E4", "E7", "E9", "F", "I"]
 quote-style = "double"
 
 [tool.ty.environment]
-extra-paths = ["src", "service/src"]
+extra-paths = ["src"]
 python-platform = "linux"
