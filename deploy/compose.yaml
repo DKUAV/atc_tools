@@ -1,76 +1,37 @@
 name: atc-tools
-
-x-service: &service
-  image: atc-service:local
-  build:
-    context: ..
-    dockerfile: deploy/Dockerfile.service
-  environment:
-    ATC_DATABASE_URL: postgresql://atc:${ATC_DB_PASSWORD:?Set a URL-safe database password}@postgres:5432/atc
-    ATC_DOCKER_DATA_DIR: ${ATC_DOCKER_DATA_DIR:-${ATC_HOST_DATA_DIR:-/srv/atc-tools}}
-    ATC_INSPECT_IMAGE: ${ATC_INSPECT_IMAGE:-atc-executor:local}
-    ATC_COMPILE_IMAGE: ${ATC_COMPILE_IMAGE:-}
-    ATC_COMPILE_910B2_IMAGE: ${ATC_COMPILE_910B2_IMAGE:-}
-    ATC_AMCT_TARGETS: ${ATC_AMCT_TARGETS:-}
-    ATC_910B2_DEVICE: ${ATC_910B2_DEVICE:-}
-    ATC_SIMULATE_COMPILE: ${ATC_SIMULATE_COMPILE:-0}
-    ATC_MAX_UPLOAD_BYTES: ${ATC_MAX_UPLOAD_BYTES:-536870912}
-    ATC_MAX_LOG_BYTES: ${ATC_MAX_LOG_BYTES:-4194304}
-    ATC_MAX_OUTPUT_BYTES: ${ATC_MAX_OUTPUT_BYTES:-1073741824}
-    ATC_MAX_ACCOUNT_BYTES: ${ATC_MAX_ACCOUNT_BYTES:-4294967296}
-    ATC_TIMEOUT_SECONDS: ${ATC_TIMEOUT_SECONDS:-900}
-    ATC_MEMORY_BYTES: ${ATC_MEMORY_BYTES:-4294967296}
-    ATC_MAX_PENDING_JOBS: ${ATC_MAX_PENDING_JOBS:-8}
-    ATC_CPU_SLOTS: ${ATC_CPU_SLOTS:-2}
-    ATC_COMPILE_SLOTS: ${ATC_COMPILE_SLOTS:-1}
-    ATC_SCRATCH_BYTES: ${ATC_SCRATCH_BYTES:-4294967296}
-    ATC_BROWSER_SECURE_COOKIES: ${ATC_BROWSER_SECURE_COOKIES:-1}
-    ATC_BROWSER_SESSION_SECONDS: ${ATC_BROWSER_SESSION_SECONDS:-43200}
-  depends_on:
-    postgres:
-      condition: service_healthy
-
 services:
-  postgres:
-    image: ${ATC_POSTGRES_IMAGE:-postgres:17@sha256:97fb53376be3e4fb1a8a61421daa69dcc3bf2fa39bda3259f5245f9a455af1a9}
+  app:
+    image: ${ATC_APP_IMAGE:?Set the tested application image}
+    init: true
+    restart: unless-stopped
+    mem_limit: ${ATC_MEMORY_BYTES:-8589934592}
+    cpus: ${ATC_CPUS:-4}
+    runtime: ${ATC_RUNTIME:-runc}
     environment:
-      POSTGRES_USER: atc
-      POSTGRES_PASSWORD: ${ATC_DB_PASSWORD:?Set a URL-safe database password}
-      POSTGRES_DB: atc
+      SSH_MODE: key-only
+      ASCEND_VISIBLE_DEVICES: ${ATC_910B2_DEVICE:-}
+      ATC_910B2_DEVICE: ${ATC_910B2_DEVICE:-}
+      ATC_AMCT_TARGETS: ${ATC_AMCT_TARGETS:-}
+      ATC_SIMULATE_COMPILE: ${ATC_SIMULATE_COMPILE:-0}
+      ATC_BROWSER_SECURE_COOKIES: ${ATC_BROWSER_SECURE_COOKIES:-1}
+      ATC_BROWSER_SESSION_SECONDS: ${ATC_BROWSER_SESSION_SECONDS:-43200}
+      ATC_TIMEOUT_SECONDS: ${ATC_TIMEOUT_SECONDS:-900}
+      ATC_CPU_SLOTS: ${ATC_CPU_SLOTS:-2}
+      ATC_COMPILE_SLOTS: ${ATC_COMPILE_SLOTS:-1}
+      ATC_MAX_UPLOAD_BYTES: ${ATC_MAX_UPLOAD_BYTES:-536870912}
+      ATC_MAX_LOG_BYTES: ${ATC_MAX_LOG_BYTES:-4194304}
+      ATC_MAX_OUTPUT_BYTES: ${ATC_MAX_OUTPUT_BYTES:-1073741824}
+      ATC_MAX_ACCOUNT_BYTES: ${ATC_MAX_ACCOUNT_BYTES:-4294967296}
+      ATC_MAX_PENDING_JOBS: ${ATC_MAX_PENDING_JOBS:-8}
+      ATC_SCRATCH_BYTES: ${ATC_SCRATCH_BYTES:-4294967296}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "atc", "-d", "atc"]
-      interval: 2s
-      timeout: 3s
-      retries: 15
-
-  api:
-    <<: *service
-    command: ["api"]
+      - ${ATC_HOST_DATA_DIR:-/srv/atc-tools}:/data
+      - ${SSH_CONFIG_DIR:?Mount the root-owned SSH public key directory}:/root/.ssh:ro
     ports:
       - "${ATC_API_BIND:-127.0.0.1}:${ATC_API_PORT:-8766}:8080"
-    volumes:
-      - &service-data
-        type: bind
-        source: ${ATC_HOST_DATA_DIR:-/srv/atc-tools}
-        target: /data
-    restart: unless-stopped
-
-  worker:
-    <<: *service
-    command: ["worker"]
-    volumes:
-      - *service-data
-      - /var/run/docker.sock:/var/run/docker.sock
-    restart: unless-stopped
-
-  executor:
-    profiles: ["build"]
-    image: atc-executor:local
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile.executor
-
-volumes:
-  postgres-data:
+      - "${ATC_SSH_BIND:-127.0.0.1}:${ATC_SSH_PORT:-2222}:22"
+    healthcheck:
+      test: ["CMD", "/opt/onnx/bin/python", "-I", "-c", "from urllib.request import ProxyHandler, build_opener; build_opener(ProxyHandler({})).open('http://127.0.0.1:8080/readyz', timeout=3).close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 12

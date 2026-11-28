@@ -1,118 +1,50 @@
 name: MobileNetV2 Ascend compilation
-
 on:
   workflow_dispatch:
     inputs:
+      image:
+        description: Tested ARM64 application image including the release tag or digest
+        required: true
+        type: string
       checks:
         description: Checks to run
+        required: true
         type: choice
-        default: all
-        options:
-          - all
-          - compile
-          - offline
-
+        options: [all, compile, offline]
 permissions:
   contents: read
-
-env:
-  DOCKER_DEFAULT_PLATFORM: linux/arm64
-  # Includes DKUAV/images#39 and resolves to the same toolchain for both SoCs.
-  ASCEND_ATC_IMAGE: ghcr.io/dkuav/ascend-atc:8.5.0-910b-ubuntu22.04-py3.11@sha256:1e25fd6ba118ac40b2690035ae4b33678a790ffb88da7632cb86c1d22c03685d
-
+  packages: read
 jobs:
-  compile:
-    name: Compile MobileNetV2 through the API
-    if: inputs.checks != 'offline'
+  verify:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
+    env:
+      ATC_APP_IMAGE: ${{ inputs.image }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
         with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
-        with:
-          version: '0.11.31'
           python-version: '3.12'
-      - name: Download the pinned public model
+          version: '0.11.31'
+      - name: Load application image
         run: |
-          model="$RUNNER_TEMP/mobilenetv2-12.onnx"
-          revision=4c46cd00fbdb7cd30b6c1c17ab54f2e1f4f7b177
-          source="https://media.githubusercontent.com/media/onnx/models/$revision/validated/vision/classification/mobilenet/model/mobilenetv2-12.onnx"
-          curl --fail --silent --show-error --location --retry 3 --max-time 120 --output "$model" "$source"
-          printf '%s  %s\n' c0c3f76d93fa3fd6580652a45618618a220fced18babf65774ed169de0432ad5 "$model" | sha256sum --check --strict
-      - name: Build the CANN executor
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          docker pull "$ATC_APP_IMAGE"
+      - name: Compile through the API
+        if: inputs.checks != 'offline'
+        run: bash scripts/ci/compile-mobilenet.sh
+      - name: Cold-start the offline bundle
+        if: inputs.checks != 'compile'
         run: |
-          docker build --platform linux/arm64 --file deploy/Dockerfile.ascend-executor \
-            --build-arg "ASCEND_ATC_IMAGE=$ASCEND_ATC_IMAGE" --tag atc-executor:ci-ascend .
-      - name: Compile original and INT8 OM for 310B4 and 910B2
-        env:
-          ATC_COMPILE_IMAGE: atc-executor:ci-ascend
-          ATC_COMPILE_910B2_IMAGE: atc-executor:ci-ascend
-          ATC_AMCT_TARGETS: 310B4,910B2
-          ATC_MEMORY_BYTES: '8589934592'
-        run: |
-          uv sync --locked --no-dev
-          bash scripts/ci/service-smoke.sh compile "$RUNNER_TEMP/mobilenetv2-12.onnx" "$RUNNER_TEMP/mobilenet-logs"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
+          bash deploy/pack-offline.sh "$RUNNER_TEMP/bundle" "$ATC_APP_IMAGE"
+          cd "$RUNNER_TEMP/bundle"
+          sha256sum -c SHA256SUMS
+          docker image rm "$ATC_APP_IMAGE"
+          docker image load -i images.tar
+          cd "$GITHUB_WORKSPACE"
+          ATC_COMPOSE_FILE="$RUNNER_TEMP/bundle/compose.yaml" bash scripts/ci/service-smoke.sh simulate
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always() && inputs.checks != 'offline'
         with:
           name: mobilenet-compilation-logs
           path: ${{ runner.temp }}/mobilenet-logs
-          if-no-files-found: ignore
-          retention-days: 7
-
-  offline:
-    name: Pack, load, and start the simulator bundle
-    if: inputs.checks != 'compile'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - name: Build and pack the images
-        run: |
-          set -u
-          export ATC_DB_PASSWORD
-          ATC_DB_PASSWORD=$(openssl rand -hex 24)
-          echo "::add-mask::$ATC_DB_PASSWORD"
-          compose=(docker compose -f deploy/compose.yaml)
-          "${compose[@]}" --profile build build api executor
-          "${compose[@]}" pull postgres
-          bash deploy/pack-offline.sh "$RUNNER_TEMP/atc-offline-bundle"
-      - name: Verify, import, and start without pulling
-        working-directory: ${{ runner.temp }}/atc-offline-bundle
-        run: |
-          set -u
-          sha256sum -c SHA256SUMS
-          expected_images=(atc-service:local atc-executor:local atc-tools-postgres:17)
-          diff -u <(printf '%s\n' "${expected_images[@]}" | sort) <(cut -f1 images.txt | sort)
-          docker image rm "${expected_images[@]}"
-          docker image load -i images.tar
-          while IFS=$'\t' read -r image expected; do
-            actual=$(docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$image")
-            [[ $actual == "$expected" && $actual == *' linux/arm64' ]]
-          done < images.txt
-
-          cp lab.env.example lab.env
-          export ATC_DB_PASSWORD ATC_HOST_DATA_DIR ATC_SIMULATE_COMPILE=1
-          ATC_DB_PASSWORD=$(openssl rand -hex 24)
-          ATC_HOST_DATA_DIR=$(mktemp -d "$RUNNER_TEMP/atc-offline-data.XXXXXXXX")
-          echo "::add-mask::$ATC_DB_PASSWORD"
-          compose=(docker compose -p atc-offline-ci --env-file lab.env -f compose.yaml)
-          compose_images=$("${compose[@]}" config --images)
-          diff -u <(printf '%s\n' atc-service:local atc-tools-postgres:17 | sort) \
-            <(printf '%s\n' "$compose_images" | sort -u)
-          cleanup() {
-            local status=$?
-            if (( status != 0 )); then
-              "${compose[@]}" logs --no-color >&2 || true
-            fi
-            "${compose[@]}" down --volumes || true
-            exit "$status"
-          }
-          trap cleanup EXIT
-          "${compose[@]}" up -d --no-build --pull never --wait --wait-timeout 90
-          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 1 \
-            --max-time 5 http://127.0.0.1:8766/readyz

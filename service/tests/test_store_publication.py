@@ -1,11 +1,11 @@
 """Keep asset files when the outcome of a database commit is uncertain."""
 
 import unittest
+from sqlite3 import OperationalError
 from unittest.mock import MagicMock, Mock, patch
 
 from atc_service.config import Settings
 from atc_service.store import Store
-from psycopg import OperationalError
 
 
 class PublicationTest(unittest.TestCase):

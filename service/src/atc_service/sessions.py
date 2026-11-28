@@ -48,14 +48,14 @@ def set_browser_password(store: Store, owner: str, password: str) -> None:
         Password supplied at the operator prompt.
     """
     verifier = _password_digest(password, token_bytes(16))
-    with store.connect() as db:
+    with store.connect(write=True) as db:
         db.execute(
-            "INSERT INTO accounts (username, password_hash) VALUES (%s, %s) "
+            "INSERT INTO accounts (username, password_hash) VALUES (?, ?) "
             "ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash",
             (owner, verifier),
         )
         db.execute(
-            "UPDATE browser_sessions SET closed = true WHERE owner = %s", (owner,)
+            "UPDATE browser_sessions SET closed = true WHERE owner = ?", (owner,)
         )
 
 
@@ -83,20 +83,20 @@ def open_session(store: Store, owner: str, password: str, previous: str) -> str:
     ResourceError
         Credentials do not match or too many attempts were made.
     """
-    with store.connect() as db:
+    with store.connect(write=True) as db:
         account = db.execute(
-            "SELECT password_hash FROM accounts WHERE username = %s", (owner,)
+            "SELECT password_hash FROM accounts WHERE username = ?", (owner,)
         ).fetchone()
         verifier = account["password_hash"] if account else None
         limited = False
         if verifier is not None:
             attempt = db.execute(
-                "INSERT INTO browser_login_attempts (owner) VALUES (%s) "
+                "INSERT INTO browser_login_attempts (owner) VALUES (?) "
                 "ON CONFLICT (owner) DO UPDATE SET "
-                "attempts = CASE WHEN browser_login_attempts.reset_at <= now() THEN 1 "
-                "ELSE LEAST(browser_login_attempts.attempts + 1, 9) END, "
-                "reset_at = CASE WHEN browser_login_attempts.reset_at <= now() "
-                "THEN now() + interval '1 minute' ELSE browser_login_attempts.reset_at END "
+                "attempts = CASE WHEN browser_login_attempts.reset_at <= CURRENT_TIMESTAMP THEN 1 "
+                "ELSE min(browser_login_attempts.attempts + 1, 9) END, "
+                "reset_at = CASE WHEN browser_login_attempts.reset_at <= CURRENT_TIMESTAMP "
+                "THEN datetime('now','+1 minute') ELSE browser_login_attempts.reset_at END "
                 "RETURNING attempts",
                 (owner,),
             ).fetchone()
@@ -111,17 +111,17 @@ def open_session(store: Store, owner: str, password: str, previous: str) -> str:
     ):
         raise ResourceError(401, "Account name or password is incorrect.")
     token = token_urlsafe(32)
-    with store.connect() as db:
+    with store.connect(write=True) as db:
         current = db.execute(
-            "SELECT 1 FROM accounts WHERE username = %s AND password_hash = %s FOR UPDATE",
+            "SELECT 1 FROM accounts WHERE username = ? AND password_hash = ?",
             (owner, verifier),
         ).fetchone()
         if current is None:
             raise ResourceError(401, "Account name or password is incorrect.")
-        db.execute("DELETE FROM browser_login_attempts WHERE owner = %s", (owner,))
+        db.execute("DELETE FROM browser_login_attempts WHERE owner = ?", (owner,))
         db.execute(
             "INSERT INTO browser_sessions (id, owner, token_digest, expires_at) "
-            "VALUES (%s, %s, %s, now() + make_interval(secs => %s))",
+            "VALUES (?, ?, ?, datetime('now', ? || ' seconds'))",
             (
                 uuid4(),
                 owner,
@@ -131,7 +131,7 @@ def open_session(store: Store, owner: str, password: str, previous: str) -> str:
         )
         if len(previous) == 43:
             db.execute(
-                "UPDATE browser_sessions SET closed = true WHERE token_digest = %s",
+                "UPDATE browser_sessions SET closed = true WHERE token_digest = ?",
                 (sha256(previous.encode()).digest(),),
             )
     return token
@@ -160,8 +160,8 @@ def read_session(store: Store, token: str) -> BrowserSession:
     if len(token) == 43:
         with store.connect() as db:
             row = db.execute(
-                "SELECT id, owner FROM browser_sessions WHERE token_digest = %s "
-                "AND NOT closed AND expires_at > now()",
+                "SELECT id, owner FROM browser_sessions WHERE token_digest = ? "
+                "AND NOT closed AND expires_at > CURRENT_TIMESTAMP",
                 (sha256(token.encode()).digest(),),
             ).fetchone()
         if row is not None:
@@ -181,7 +181,7 @@ def close_session(store: Store, session: BrowserSession) -> None:
     session
         Session to revoke.
     """
-    with store.connect() as db:
+    with store.connect(write=True) as db:
         db.execute(
-            "UPDATE browser_sessions SET closed = true WHERE id = %s", (session.id,)
+            "UPDATE browser_sessions SET closed = true WHERE id = ?", (session.id,)
         )

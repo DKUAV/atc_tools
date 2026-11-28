@@ -1,9 +1,11 @@
-"""Persist accounts, owned files, and job state in PostgreSQL."""
+"""Persist accounts, owned files, and job state in SQLite."""
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from collections.abc import Generator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib.resources import files
@@ -11,13 +13,30 @@ from secrets import token_urlsafe
 from typing import Any
 from uuid import UUID, uuid4
 
-import psycopg
-from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
-
 from atc_service.config import Settings
 
 Row = dict[str, Any]
+
+sqlite3.register_adapter(UUID, str)
+sqlite3.register_converter("uuid", lambda raw: UUID(raw.decode()))
+sqlite3.register_converter("json", json.loads)
+sqlite3.register_converter("boolean", lambda raw: bool(int(raw)))
+
+
+def _named_row(cursor: sqlite3.Cursor, values: tuple[Any, ...]) -> Row:
+    """Map projected SQL column names to their decoded values.
+
+    Parameters
+    ----------
+    cursor, values
+        Query metadata and values for one result.
+
+    Returns
+    -------
+    dict
+        Named row for service callers.
+    """
+    return {column[0]: value for column, value in zip(cursor.description, values)}
 
 
 class ResourceError(ValueError):
@@ -61,25 +80,43 @@ class Store:
         """
         self.settings = settings
 
-    def connect(self) -> psycopg.Connection[Row]:
-        """Open a connection that returns named columns.
+    @contextmanager
+    def connect(
+        self, *, write: bool = False
+    ) -> Generator[sqlite3.Connection, None, None]:
+        """Open a bounded SQLite transaction with foreign key enforcement.
 
-        Returns
-        -------
-        psycopg.Connection
-            Connection for one request or worker operation.
+        Parameters
+        ----------
+        write
+            Reserve the writer before reading state for a transition.
+
+        Yields
+        ------
+        sqlite3.Connection
+            Connection scoped to this transaction.
         """
-        return psycopg.Connection[Row].connect(
-            self.settings.database_url, row_factory=dict_row
-        )
+        with closing(
+            sqlite3.connect(
+                self.settings.data_dir / "service.sqlite3",
+                timeout=5,
+                isolation_level=None,
+                detect_types=sqlite3.PARSE_DECLTYPES,
+            )
+        ) as db:
+            db.row_factory = _named_row
+            db.execute("PRAGMA foreign_keys = ON")
+            db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+            with db:
+                yield db
 
     @contextmanager
-    def _publication(self) -> Generator[psycopg.Connection[Row], None, None]:
+    def _publication(self) -> Generator[sqlite3.Connection, None, None]:
         """Distinguish a rejected publication from an uncertain commit.
 
         Yields
         ------
-        psycopg.Connection
+        sqlite3.Connection
             Transaction used to register owned files and their job state.
 
         Raises
@@ -87,44 +124,40 @@ class Store:
         ResourceError
             A database error occurred before starting the commit. The caller
             can safely discard the unregistered files.
-        psycopg.DatabaseError
+        sqlite3.DatabaseError
             The commit failed or its outcome is unknown. Keep the files in
             case registration became durable.
         """
         with ExitStack() as transaction:
             try:
-                yield transaction.enter_context(self.connect())
-            except psycopg.DatabaseError as error:
+                yield transaction.enter_context(self.connect(write=True))
+            except sqlite3.DatabaseError as error:
                 raise ResourceError(
                     503, "Could not register the files. Try again."
                 ) from error
 
     def migrate(self) -> None:
-        """Apply schema migrations under a database migration lock."""
-        with self.connect() as db:
-            db.execute("SELECT pg_advisory_xact_lock(792640301)")
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS schema_versions (version integer PRIMARY KEY)"
-            )
-            for version, filename in enumerate(
-                (
-                    "001_initial.sql",
-                    "002_browser.sql",
-                    "003_workflows.sql",
-                    "004_delivery.sql",
-                    "005_stage_times.sql",
-                ),
-                1,
-            ):
-                if (
-                    db.execute(
-                        "SELECT 1 FROM schema_versions WHERE version = %s", (version,)
-                    ).fetchone()
-                    is None
-                ):
-                    migration = files("atc_service").joinpath(filename).read_bytes()
-                    db.execute(migration, prepare=False)
-                    db.execute("INSERT INTO schema_versions VALUES (%s)", (version,))
+        """Apply schema migrations under the SQLite writer lock."""
+        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(self.settings.data_dir / "service.sqlite3")) as db:
+            if db.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
+                raise RuntimeError(
+                    "The service database requires WAL on local storage."
+                )
+        with self.connect(write=True) as db:
+            version = db.execute("PRAGMA user_version").fetchone()["user_version"]
+            if version == 0:
+                schema = (
+                    files("atc_service")
+                    .joinpath("001_initial.sql")
+                    .read_text(encoding="utf-8")
+                )
+                for statement in schema.split(";"):
+                    if statement.strip():
+                        db.execute(statement)
+                db.execute("PRAGMA user_version = 1")
+            elif version != 1:
+                raise RuntimeError("Unsupported service database version.")
 
     def issue_token(self, username: str) -> str:
         """Provision an account and issue one bearer token.
@@ -140,13 +173,13 @@ class Store:
             Plaintext token to disclose to the operator once.
         """
         token = token_urlsafe(32)
-        with self.connect() as db:
+        with self.connect(write=True) as db:
             db.execute(
-                "INSERT INTO accounts (username) VALUES (%s) ON CONFLICT DO NOTHING",
+                "INSERT INTO accounts (username) VALUES (?) ON CONFLICT DO NOTHING",
                 (username,),
             )
             db.execute(
-                "INSERT INTO tokens VALUES (%s, %s)",
+                "INSERT INTO tokens VALUES (?, ?)",
                 (sha256(token.encode()).digest(), username),
             )
         return token
@@ -164,10 +197,10 @@ class Store:
         bool
             Whether a token was removed.
         """
-        with self.connect() as db:
+        with self.connect(write=True) as db:
             return (
                 db.execute(
-                    "DELETE FROM tokens WHERE digest = %s",
+                    "DELETE FROM tokens WHERE digest = ?",
                     (sha256(token.encode()).digest(),),
                 ).rowcount
                 != 0
@@ -188,14 +221,14 @@ class Store:
         """
         with self.connect() as db:
             row = db.execute(
-                "SELECT username FROM tokens WHERE digest = %s",
+                "SELECT username FROM tokens WHERE digest = ?",
                 (sha256(token.encode()).digest(),),
             ).fetchone()
         return row["username"] if row else None
 
     def _insert_asset(
         self,
-        db: psycopg.Connection[Row],
+        db: sqlite3.Connection,
         owner: str,
         record: FileRecord,
         session_id: UUID | None,
@@ -205,7 +238,7 @@ class Store:
         Parameters
         ----------
         db
-            Database connection with the account row locked.
+            Connection in the active SQLite write transaction.
         owner
             Account that owns the new file.
         record
@@ -224,7 +257,7 @@ class Store:
             The account's storage quota would be exceeded.
         """
         used = db.execute(
-            "SELECT COALESCE(sum(size), 0) AS total FROM assets WHERE owner = %s AND NOT cleared",
+            "SELECT COALESCE(sum(size), 0) AS total FROM assets WHERE owner = ? AND NOT cleared",
             (owner,),
         ).fetchone()
         assert used is not None
@@ -232,7 +265,7 @@ class Store:
             raise ResourceError(413, "Account storage quota exceeded.")
         row = db.execute(
             "INSERT INTO assets (id, owner, kind, filename, size, sha256, browser_session_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *",
+            "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *",
             (
                 record.id,
                 owner,
@@ -266,10 +299,7 @@ class Store:
             New asset record.
         """
         with self._publication() as db:
-            db.execute(
-                "SELECT username FROM accounts WHERE username = %s FOR UPDATE", (owner,)
-            )
-            self._lock_session(db, owner, session_id)
+            self._require_live_session(db, owner, session_id)
             return self._insert_asset(db, owner, record, session_id)
 
     def add_browser_model(
@@ -292,17 +322,14 @@ class Store:
             Queued inspection job and its input ID.
         """
         with self._publication() as db:
-            db.execute(
-                "SELECT username FROM accounts WHERE username = %s FOR UPDATE", (owner,)
-            )
-            self._lock_session(db, owner, session_id)
+            self._require_live_session(db, owner, session_id)
             self._insert_asset(db, owner, record, session_id)
             return self._enqueue(
                 db,
                 owner,
                 "inspect_onnx",
                 record.id,
-                self.settings.inspect_image,
+                self.settings.runtime,
                 None,
                 False,
                 None,
@@ -334,17 +361,17 @@ class Store:
         with self.connect() as db:
             row = db.execute(
                 "SELECT a.* FROM assets a LEFT JOIN browser_sessions s ON s.id = a.browser_session_id "
-                "WHERE a.id = %s AND a.owner = %s AND NOT a.cleared "
-                "AND a.browser_session_id IS NOT DISTINCT FROM %s "
-                "AND (s.id IS NULL OR (NOT s.closed AND s.expires_at > now()))",
+                "WHERE a.id = ? AND a.owner = ? AND NOT a.cleared "
+                "AND a.browser_session_id IS ? "
+                "AND (s.id IS NULL OR (NOT s.closed AND s.expires_at > CURRENT_TIMESTAMP))",
                 (asset_id, owner, session_id),
             ).fetchone()
         if row is None:
             raise ResourceError(404, "Asset not found.")
         return row
 
-    def _lock_session(
-        self, db: psycopg.Connection[Row], owner: str, session_id: UUID | None
+    def _require_live_session(
+        self, db: sqlite3.Connection, owner: str, session_id: UUID | None
     ) -> None:
         """Hold a live browser session open while a file reference is created.
 
@@ -365,8 +392,8 @@ class Store:
         if (
             session_id is not None
             and db.execute(
-                "SELECT 1 FROM browser_sessions WHERE id = %s AND owner = %s "
-                "AND NOT closed AND expires_at > clock_timestamp() FOR UPDATE",
+                "SELECT 1 FROM browser_sessions WHERE id = ? AND owner = ? "
+                "AND NOT closed AND expires_at > CURRENT_TIMESTAMP",
                 (session_id, owner),
             ).fetchone()
             is None
@@ -419,14 +446,11 @@ class Store:
             The input is unavailable, unvalidated, or over quota, or the key
             was used by a different request.
         """
-        with self.connect() as db:
-            db.execute(
-                "SELECT username FROM accounts WHERE username = %s FOR UPDATE", (owner,)
-            )
-            self._lock_session(db, owner, session_id)
+        with self.connect(write=True) as db:
+            self._require_live_session(db, owner, session_id)
             if key is not None:
                 previous = db.execute(
-                    "SELECT * FROM jobs WHERE owner = %s AND idempotency_key = %s",
+                    "SELECT * FROM jobs WHERE owner = ? AND idempotency_key = ?",
                     (owner, key),
                 ).fetchone()
                 if previous is not None:
@@ -459,7 +483,7 @@ class Store:
                 and not simulated
                 and db.execute(
                     "SELECT 1 FROM job_outputs o JOIN jobs j ON j.id = o.job_id "
-                    "WHERE o.asset_id = %s AND j.operation = 'quantize_onnx' "
+                    "WHERE o.asset_id = ? AND j.operation = 'quantize_onnx' "
                     "AND NOT j.simulated",
                     (input_id,),
                 ).fetchone()
@@ -485,8 +509,8 @@ class Store:
                         operation in {"run_npu", "profile_om"}
                         and db.execute(
                             "SELECT 1 FROM job_outputs o JOIN jobs j ON j.id = o.job_id "
-                            "WHERE o.asset_id = %s AND j.input_id = %s AND "
-                            "(j.workflow->>'target' = '910B2' OR j.preset LIKE '910b2-%%')",
+                            "WHERE o.asset_id = ? AND j.input_id = ? AND "
+                            "(json_extract(j.workflow, '$.target') = '910B2' OR j.preset LIKE '910b2-%')",
                             (primary["id"], input_id),
                         ).fetchone()
                         is None
@@ -514,9 +538,9 @@ class Store:
                 }
                 if ids:
                     owned = db.execute(
-                        "SELECT count(*) AS total FROM assets WHERE id = ANY(%s) AND owner = %s "
-                        "AND browser_session_id IS NOT DISTINCT FROM %s AND kind = 'dataset' AND NOT cleared",
-                        (list(ids), owner, session_id),
+                        "SELECT count(*) AS total FROM assets WHERE id IN (SELECT value FROM json_each(?)) AND owner = ? "
+                        "AND browser_session_id IS ? AND kind = 'dataset' AND NOT cleared",
+                        (json.dumps(sorted(map(str, ids))), owner, session_id),
                     ).fetchone()
                     if owned is None or owned["total"] != len(ids):
                         raise ResourceError(
@@ -538,7 +562,7 @@ class Store:
 
     def _require_asset(
         self,
-        db: psycopg.Connection[Row],
+        db: sqlite3.Connection,
         owner: str,
         session_id: UUID | None,
         asset_id: UUID,
@@ -566,9 +590,9 @@ class Store:
             An input does not exist in the requested scope or kind.
         """
         asset = db.execute(
-            "SELECT * FROM assets WHERE id = %s AND owner = %s AND kind = ANY(%s) "
-            "AND NOT cleared AND browser_session_id IS NOT DISTINCT FROM %s",
-            (asset_id, owner, kinds, session_id),
+            "SELECT * FROM assets WHERE id = ? AND owner = ? AND kind IN (SELECT value FROM json_each(?)) "
+            "AND NOT cleared AND browser_session_id IS ?",
+            (asset_id, owner, json.dumps(kinds), session_id),
         ).fetchone()
         if asset is None:
             raise ResourceError(
@@ -579,7 +603,7 @@ class Store:
 
     def _enqueue(
         self,
-        db: psycopg.Connection[Row],
+        db: sqlite3.Connection,
         owner: str,
         operation: str,
         input_id: UUID,
@@ -595,7 +619,7 @@ class Store:
         Parameters
         ----------
         db
-            Transaction holding the account row lock.
+            Write transaction for this submission.
         owner
             Account submitting the job.
         operation
@@ -626,7 +650,7 @@ class Store:
             The account has reached its pending job limit.
         """
         pending = db.execute(
-            "SELECT count(*) AS total FROM jobs WHERE owner = %s AND state IN ('queued', 'running')",
+            "SELECT count(*) AS total FROM jobs WHERE owner = ? AND state IN ('queued', 'running')",
             (owner,),
         ).fetchone()
         assert pending is not None
@@ -642,7 +666,7 @@ class Store:
         job = db.execute(
             "INSERT INTO jobs (id, owner, operation, input_id, image, preset, simulated, "
             "idempotency_key, browser_session_id, workflow, lane) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
             (
                 uuid4(),
                 owner,
@@ -653,7 +677,7 @@ class Store:
                 simulated,
                 key,
                 session_id,
-                Jsonb(workflow) if workflow is not None else None,
+                json.dumps(workflow) if workflow is not None else None,
                 lane,
             ),
         ).fetchone()
@@ -682,13 +706,13 @@ class Store:
         """
         with self.connect() as db:
             job = db.execute(
-                "SELECT * FROM jobs WHERE id = %s AND owner = %s", (job_id, owner)
+                "SELECT * FROM jobs WHERE id = ? AND owner = ?", (job_id, owner)
             ).fetchone()
             if job is None:
                 raise ResourceError(404, "Job not found.")
             outputs = db.execute(
                 "SELECT a.* FROM assets a JOIN job_outputs o ON a.id = o.asset_id "
-                "WHERE o.job_id = %s AND a.owner = %s ORDER BY a.filename",
+                "WHERE o.job_id = ? AND a.owner = ? ORDER BY a.filename",
                 (job_id, owner),
             ).fetchall()
             return job, outputs
@@ -718,13 +742,13 @@ class Store:
         """
         with self._publication() as db:
             changed = db.execute(
-                "UPDATE jobs SET stages = %s, accuracy_summary = COALESCE(%s, accuracy_summary), "
-                "stage_times = COALESCE(%s, stage_times) "
-                "WHERE id = %s AND attempt_id = %s AND state = 'running'",
+                "UPDATE jobs SET stages = ?, accuracy_summary = COALESCE(?, accuracy_summary), "
+                "stage_times = COALESCE(?, stage_times) "
+                "WHERE id = ? AND attempt_id = ? AND state = 'running'",
                 (
-                    Jsonb(stages),
-                    Jsonb(summary) if summary is not None else None,
-                    Jsonb(times) if times is not None else None,
+                    json.dumps(stages),
+                    json.dumps(summary) if summary is not None else None,
+                    json.dumps(times) if times is not None else None,
                     job["id"],
                     job["attempt_id"],
                 ),
@@ -734,7 +758,7 @@ class Store:
             self._publish_outputs(db, job, records)
 
     def _publish_outputs(
-        self, db: psycopg.Connection[Row], job: Row, records: list[FileRecord]
+        self, db: sqlite3.Connection, job: Row, records: list[FileRecord]
     ) -> None:
         """Register output assets in a job transaction.
 
@@ -749,15 +773,9 @@ class Store:
         """
         if not records:
             return
-        db.execute(
-            "SELECT username FROM accounts WHERE username = %s FOR UPDATE",
-            (job["owner"],),
-        )
         for record in records:
             self._insert_asset(db, job["owner"], record, job["browser_session_id"])
-            db.execute(
-                "INSERT INTO job_outputs VALUES (%s, %s)", (job["id"], record.id)
-            )
+            db.execute("INSERT INTO job_outputs VALUES (?, ?)", (job["id"], record.id))
 
     def dataset_sources(self, job: Row) -> dict[str, str]:
         """Find the filenames of the dataset assets used by a claimed workflow.
@@ -783,9 +801,13 @@ class Store:
             return {}
         with self.connect() as db:
             rows = db.execute(
-                "SELECT id, filename FROM assets WHERE id = ANY(%s) AND owner = %s "
-                "AND browser_session_id IS NOT DISTINCT FROM %s AND kind = 'dataset' AND NOT cleared",
-                (list(ids), job["owner"], job["browser_session_id"]),
+                "SELECT id, filename FROM assets WHERE id IN (SELECT value FROM json_each(?)) AND owner = ? "
+                "AND browser_session_id IS ? AND kind = 'dataset' AND NOT cleared",
+                (
+                    json.dumps(sorted(map(str, ids))),
+                    job["owner"],
+                    job["browser_session_id"],
+                ),
             ).fetchall()
         return {str(row["id"]): row["filename"] for row in rows}
 
@@ -802,10 +824,10 @@ class Store:
         bool
             True if the task still needs verification and was not cancelled.
         """
-        with self.connect() as db:
+        with self.connect(write=True) as db:
             return (
                 db.execute(
-                    "UPDATE jobs SET lane = 'device', state = 'queued' WHERE id = %s AND attempt_id = %s "
+                    "UPDATE jobs SET lane = 'device', state = 'queued' WHERE id = ? AND attempt_id = ? "
                     "AND lane = 'compile' AND state = 'running' AND NOT cancel_requested",
                     (job["id"], job["attempt_id"]),
                 ).rowcount
@@ -813,23 +835,23 @@ class Store:
             )
 
     def pin_executor(self, job: Row, image_id: str) -> None:
-        """Persist the Docker image ID before starting this job's executor.
+        """Persist the installed runtime identifier before starting an attempt.
 
         Parameters
         ----------
         job
             Claimed job and active attempt ID.
         image_id
-            Immutable ID resolved by the worker's Docker daemon.
+            Base digest and installed wheel version.
 
         Raises
         ------
         ResourceError
             The worker no longer owns this attempt.
         """
-        with self.connect() as db:
+        with self.connect(write=True) as db:
             changed = db.execute(
-                "UPDATE jobs SET image = %s WHERE id = %s AND attempt_id = %s AND state = 'running'",
+                "UPDATE jobs SET image = ? WHERE id = ? AND attempt_id = ? AND state = 'running'",
                 (image_id, job["id"], job["attempt_id"]),
             )
             if changed.rowcount != 1:
@@ -853,9 +875,9 @@ class Store:
         with self.connect() as db:
             row = db.execute(
                 "SELECT a.id FROM job_outputs om JOIN job_outputs info USING (job_id) "
-                "JOIN assets a ON a.id = info.asset_id WHERE om.asset_id = %s "
-                "AND a.kind = 'build_info' AND NOT a.cleared AND a.owner = %s "
-                "AND a.browser_session_id IS NOT DISTINCT FROM %s",
+                "JOIN assets a ON a.id = info.asset_id WHERE om.asset_id = ? "
+                "AND a.kind = 'build_info' AND NOT a.cleared AND a.owner = ? "
+                "AND a.browser_session_id IS ?",
                 (UUID(primary_id), job["owner"], job["browser_session_id"]),
             ).fetchone()
         return row["id"] if row else None
@@ -868,11 +890,11 @@ class Store:
         checks
             Safe readiness flags for configured executors and runtime.
         """
-        with self.connect() as db:
+        with self.connect(write=True) as db:
             db.execute(
-                "INSERT INTO worker_status (checks) VALUES (%s) ON CONFLICT (singleton) "
-                "DO UPDATE SET checks = EXCLUDED.checks, heartbeat_at = now()",
-                (Jsonb(checks),),
+                "INSERT INTO worker_status (checks) VALUES (?) ON CONFLICT (singleton) "
+                "DO UPDATE SET checks = EXCLUDED.checks, heartbeat_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+                (json.dumps(checks),),
             )
 
     def cancel(self, owner: str, job_id: UUID) -> Row:
@@ -895,17 +917,17 @@ class Store:
         ResourceError
             No such owned job exists.
         """
-        with self.connect() as db:
+        with self.connect(write=True) as db:
             row = db.execute(
                 "UPDATE jobs SET cancel_requested = true, "
                 "state = CASE WHEN state = 'queued' THEN 'cancelled' ELSE state END, "
-                "finished_at = CASE WHEN state = 'queued' THEN now() ELSE finished_at END "
-                "WHERE id = %s AND owner = %s AND state IN ('queued', 'running') RETURNING *",
+                "finished_at = CASE WHEN state = 'queued' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE finished_at END "
+                "WHERE id = ? AND owner = ? AND state IN ('queued', 'running') RETURNING *",
                 (job_id, owner),
             ).fetchone()
             if row is None:
                 row = db.execute(
-                    "SELECT * FROM jobs WHERE id = %s AND owner = %s", (job_id, owner)
+                    "SELECT * FROM jobs WHERE id = ? AND owner = ?", (job_id, owner)
                 ).fetchone()
             if row is None:
                 raise ResourceError(404, "Job not found.")
@@ -924,22 +946,22 @@ class Store:
         dict or None
             Claimed job or None when the queue is empty.
         """
-        with self.connect() as db:
+        with self.connect(write=True) as db:
             job = db.execute(
-                "SELECT id FROM jobs WHERE state = 'queued' AND lane = %s "
-                "ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED",
+                "SELECT id FROM jobs WHERE state = 'queued' AND lane = ? "
+                "ORDER BY created_at, id LIMIT 1",
                 (lane,),
             ).fetchone()
             if job is None:
                 return None
             attempt = uuid4()
             db.execute(
-                "INSERT INTO attempts (id, job_id) VALUES (%s, %s)",
+                "INSERT INTO attempts (id, job_id) VALUES (?, ?)",
                 (attempt, job["id"]),
             )
             return db.execute(
-                "UPDATE jobs SET state = 'running', started_at = COALESCE(started_at, now()), attempt_id = %s "
-                "WHERE id = %s RETURNING *",
+                "UPDATE jobs SET state = 'running', started_at = COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')), attempt_id = ? "
+                "WHERE id = ? RETURNING *",
                 (attempt, job["id"]),
             ).fetchone()
 
@@ -969,7 +991,7 @@ class Store:
         """
         with self.connect() as db:
             row = db.execute(
-                "SELECT cancel_requested FROM jobs WHERE id = %s", (job_id,)
+                "SELECT cancel_requested FROM jobs WHERE id = ?", (job_id,)
             ).fetchone()
             assert row is not None
             return row["cancel_requested"]
@@ -988,7 +1010,7 @@ class Store:
         job
             Claimed job and attempt ID.
         exit_code
-            Exit status reported by the task container.
+            Exit status reported by the execution process.
         error
             Safe failure summary, if the operation failed.
         records
@@ -1001,7 +1023,7 @@ class Store:
         """
         with self._publication() as db:
             current = db.execute(
-                "SELECT cancel_requested FROM jobs WHERE id = %s AND attempt_id = %s AND state = 'running' FOR UPDATE",
+                "SELECT cancel_requested FROM jobs WHERE id = ? AND attempt_id = ? AND state = 'running'",
                 (job["id"], job["attempt_id"]),
             ).fetchone()
             if current is None:
@@ -1017,11 +1039,11 @@ class Store:
                 self._publish_outputs(db, job, records)
                 if job["operation"] == "inspect_onnx":
                     db.execute(
-                        "UPDATE assets SET validated = true WHERE id = %s",
+                        "UPDATE assets SET validated = true WHERE id = ?",
                         (job["input_id"],),
                     )
             db.execute(
-                "UPDATE jobs SET state = %s, error = %s, exit_code = %s, finished_at = now() WHERE id = %s",
+                "UPDATE jobs SET state = ?, error = ?, exit_code = ?, finished_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
                 (state, error, exit_code, job["id"]),
             )
             return state == "succeeded"
@@ -1034,25 +1056,25 @@ class Store:
         File rows and job attempts remain available for history. An interrupted
         cleanup can retry the same unlink in the next transaction.
         """
-        with self.connect() as db:
+        with self.connect(write=True) as db:
             sessions = db.execute(
-                "SELECT s.id FROM browser_sessions s WHERE (s.closed OR s.expires_at <= now()) "
+                "SELECT s.id FROM browser_sessions s WHERE (s.closed OR s.expires_at <= CURRENT_TIMESTAMP) "
                 "AND EXISTS (SELECT 1 FROM assets a WHERE a.browser_session_id = s.id AND NOT a.cleared) "
                 "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.browser_session_id = s.id "
-                "AND j.state IN ('queued', 'running')) FOR UPDATE OF s SKIP LOCKED LIMIT 32"
+                "AND j.state IN ('queued', 'running')) LIMIT 32"
             ).fetchall()
             if not sessions:
                 return
             rows = db.execute(
-                "SELECT a.id FROM assets a WHERE NOT a.cleared AND a.browser_session_id = ANY(%s) "
+                "SELECT a.id FROM assets a WHERE NOT a.cleared AND a.browser_session_id IN (SELECT value FROM json_each(?)) "
                 "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.browser_session_id = a.browser_session_id "
                 "AND j.state IN ('queued', 'running')) LIMIT 100",
-                ([session["id"] for session in sessions],),
+                (json.dumps([str(session["id"]) for session in sessions]),),
             ).fetchall()
             for row in rows:
                 (self.settings.data_dir / "assets" / str(row["id"])).unlink(
                     missing_ok=True
                 )
                 db.execute(
-                    "UPDATE assets SET cleared = true WHERE id = %s", (row["id"],)
+                    "UPDATE assets SET cleared = true WHERE id = ?", (row["id"],)
                 )

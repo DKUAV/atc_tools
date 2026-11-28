@@ -1,40 +1,39 @@
-"""Execute queued jobs in restricted Docker containers."""
+"""Schedule conversion jobs and supervise isolated Linux process groups."""
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
 import shutil
+import signal
+import subprocess
+import sys
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
-from errno import ENODATA
 from hashlib import sha256
+from importlib.util import find_spec
 from pathlib import Path
 from stat import S_ISREG
 from time import monotonic, sleep
-from typing import BinaryIO
+from typing import IO, BinaryIO
 from uuid import uuid4
 
-import docker
-from docker.errors import DockerException, NotFound
-from docker.models.containers import Container
-from docker.types import LogConfig, Mount, Ulimit
-
-from atc_service.config import Settings
+from atc_service.config import Settings, runtime_identity
 from atc_service.store import FileRecord, ResourceError, Row, Store
 from atc_service.workflows import DATASET_EXTENSIONS, planned_stages
 
 LOG = logging.getLogger("atc_service.worker")
 
 
-def _capture(container: Container, path: Path, limit: int) -> None:
+def _capture(stream: IO[bytes], path: Path, limit: int) -> None:
     """Save a live log with a bounded prefix and tail.
 
     Parameters
     ----------
-    container
-        Running or stopped container with a readable Docker log.
+    stream
+        Combined stdout and stderr of the task.
     path
         Attempt log path owned by the worker.
     limit
@@ -47,7 +46,7 @@ def _capture(container: Container, path: Path, limit: int) -> None:
     tail = b""
     omitted = False
     with path.open("wb") as output:
-        for chunk in container.logs(stream=True, follow=True):
+        for chunk in iter(lambda: os.read(stream.fileno(), 65536), b""):
             size = min(len(chunk), max(0, prefix_limit - length))
             if size:
                 length += output.write(chunk[:size])
@@ -76,7 +75,7 @@ def _publish(settings: Settings, job: Row, output: Path) -> list[FileRecord]:
     Returns
     -------
     list[FileRecord]
-        Verified files ready to be registered in PostgreSQL.
+        Verified files ready to be registered in SQLite.
 
     Raises
     ------
@@ -121,6 +120,8 @@ def _publish(settings: Settings, job: Row, output: Path) -> list[FileRecord]:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(chunk)
             record = FileRecord(uuid4(), kind, filename, size, digest.hexdigest())
+            os.chown(path, os.geteuid(), os.getegid())
+            path.chmod(0o600)
             path.replace(settings.data_dir / "assets" / str(record.id))
             records.append(record)
     except (OSError, ValueError):
@@ -193,7 +194,7 @@ def _sync_workflow(
         except FileNotFoundError:
             return
         except OSError as error:
-            if error.errno != ENODATA or attempt == 2:
+            if error.errno != getattr(errno, "ENODATA", None) or attempt == 2:
                 raise
             # A Docker Desktop bind mount can invalidate an open handle on replace.
             sleep(0.01)
@@ -367,39 +368,17 @@ def _publish_bundle(
     return records
 
 
-def _recover(settings: Settings, store: Store, client: docker.DockerClient) -> None:
-    """Stop interrupted attempts and mark them terminal before accepting work.
+def _recover(settings: Settings, store: Store) -> None:
+    """Finalize interrupted attempts after the container PID namespace restarts.
 
     Parameters
     ----------
-    settings
-        Log location and retention cap.
-    store
-        Database containing the interrupted attempts.
-    client
-        Trusted Docker daemon client.
+    settings, store
+        Persistent attempt directories and database.
     """
     for job in store.running():
         attempt = job["attempt_id"]
         directory = settings.data_dir / "runs" / str(attempt)
-        try:
-            container = client.containers.get(f"atc-attempt-{attempt.hex}")
-        except NotFound:
-            pass
-        else:
-            container.stop(timeout=5)
-            path = directory / "task.log"
-            if path.parent.is_dir():
-                recovery_log = path.with_name("task.recovery")
-                _capture(container, recovery_log, settings.max_log_bytes)
-                if (
-                    not path.exists()
-                    or recovery_log.stat().st_size > path.stat().st_size
-                ):
-                    recovery_log.replace(path)
-                else:
-                    recovery_log.unlink()
-            container.remove()
         store.finish(
             job, None, "Worker was interrupted. Submit the operation again.", []
         )
@@ -408,48 +387,28 @@ def _recover(settings: Settings, store: Store, client: docker.DockerClient) -> N
         LOG.warning("job_id=%s attempt_id=%s event=recovered", job["id"], attempt)
 
 
-def _executor_image(
-    settings: Settings,
-    store: Store,
-    client: docker.DockerClient,
-    job: Row,
-    previous_om: str | None,
+def _executor_identity(
+    settings: Settings, store: Store, job: Row, previous_om: str | None
 ) -> str:
-    """Resolve and pin the administrator-selected image for this attempt.
+    """Record the installed runtime and verify the provenance of resumed work.
 
     Parameters
     ----------
-    settings, store, client
-        Asset storage, job database, and trusted Docker daemon.
-    job
-        Active job carrying its configured image reference or pinned image ID.
-    previous_om
-        Primary OM for a resumed verification phase or optional stage retry.
+    settings, store, job, previous_om
+        Asset storage, database, active attempt and optional previously built OM.
 
     Returns
     -------
     str
-        Local immutable Docker image ID to use for container creation.
+        Base image and installed tool version.
 
     Raises
     ------
     ResourceError
-        The original image is unavailable or legacy build metadata cannot confirm it.
+        A retry would mix tools from different releases.
     """
-    try:
-        image_id = client.images.get(job["image"]).id
-    except NotFound as error:
-        raise ResourceError(
-            409,
-            "The job's executor image is unavailable. Ask an operator to restore it.",
-        ) from error
-    if not image_id:
-        raise ResourceError(409, "Docker did not return an executor image ID.")
-    if job["image"] == image_id:
-        return image_id
+    image_id = runtime_identity()
     if previous_om is not None:
-        # Older jobs stored only a tag. Metadata may confirm the approved image,
-        # but must never select which image Docker executes.
         build_id = store.build_info_for_om(job, previous_om)
         recorded = None
         if build_id is not None:
@@ -467,16 +426,37 @@ def _executor_image(
         if recorded != image_id:
             raise ResourceError(
                 409,
-                "Cannot verify the original executor image. Restore its original tag or recompile the model.",
+                "The installed tools differ from the original build. Recompile the model or restore its tool version.",
             )
     store.pin_executor(job, image_id)
     return image_id
 
 
+def _stop_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate and drain the entire job process group before reusing its slot.
+
+    Parameters
+    ----------
+    process
+        Leader started in a new session. Container init reaps orphan children.
+    """
+    deadline = monotonic() + 2
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        while True:
+            process.poll()
+            os.killpg(process.pid, 0)
+            if monotonic() >= deadline:
+                os.killpg(process.pid, signal.SIGKILL)
+            sleep(0.05)
+    except ProcessLookupError:
+        process.wait()
+
+
 def _execute(
     settings: Settings,
     store: Store,
-    client: docker.DockerClient,
+    slot_uid: int,
     job: Row,
 ) -> None:
     """Stage one operation, execute it, and publish verified results.
@@ -487,8 +467,8 @@ def _execute(
         Task resource limits and storage paths.
     store
         Persistent job state and cancellation requests.
-    client
-        Trusted Docker daemon client.
+    slot_uid
+        Dedicated Linux identity for this execution slot.
     job
         Claimed job and execution attempt.
     """
@@ -496,11 +476,9 @@ def _execute(
     directory = settings.data_dir / "runs" / str(attempt)
     inputs = directory / "input"
     output = directory / "output"
-    host = settings.docker_data_dir / "runs" / str(attempt)
     error = None
     records: list[FileRecord] = []
     exit_code = None
-    container = None
     stages: dict[str, str] = dict(job["stages"])
     published: dict[str, int] = {}
     deferred = False
@@ -509,8 +487,10 @@ def _execute(
         directory.mkdir(mode=0o700, parents=True)
         inputs.mkdir()
         output.mkdir()
-        # The sandbox UID can write the output bind mount. The host parent is private.
-        output.chmod(0o777)
+        os.chown(directory, -1, slot_uid)
+        directory.chmod(0o710)
+        os.chown(output, slot_uid, slot_uid)
+        output.chmod(0o700)
         workflow = job["workflow"]
         action = workflow.get("action") if workflow is not None else None
         checks = workflow is not None and (
@@ -532,7 +512,6 @@ def _execute(
         )
         primary = None
         if workflow is not None:
-            (output / "workspace").mkdir()
             _, own_outputs = store.job(job["owner"], job["id"])
             published.update(
                 {record["filename"]: record["size"] for record in own_outputs}
@@ -572,10 +551,9 @@ def _execute(
         use_npu = job["lane"] == "device" and not job["simulated"]
         if use_npu and settings.ascend_device is None:
             raise ValueError("The 910B2 runtime device is unavailable.")
-        image_id = _executor_image(
+        image_id = _executor_identity(
             settings,
             store,
-            client,
             job,
             primary if phase == "verify" or action == "retry_step" else None,
         )
@@ -594,86 +572,99 @@ def _execute(
             ),
             encoding="utf-8",
         )
-        container = client.containers.create(
-            image_id,
-            name=f"atc-attempt-{attempt.hex}",
-            labels={"atc.attempt": str(attempt)},
-            mounts=[
-                Mount("/work/input", str(host / "input"), type="bind", read_only=True),
-                Mount("/work/output", str(host / "output"), type="bind"),
-            ],
-            environment={
-                "SSH_MODE": "disabled",
-                "HOME": "/tmp",
-                "PYTHONUNBUFFERED": "1",
-                "OMP_NUM_THREADS": "1",
-                "OPENBLAS_NUM_THREADS": "1",
-                "TE_PARALLEL_COMPILER": "2",
-                "OPENCV_IO_MAX_IMAGE_PIXELS": "16777216",
-                **(
-                    {"ASCEND_VISIBLE_DEVICES": str(settings.ascend_device)}
-                    if use_npu
-                    else {}
-                ),
-            },
-            runtime="ascend" if use_npu else None,
-            user="10001:10001",
-            network_disabled=True,
-            read_only=True,
-            tmpfs={
-                "/tmp": "rw,nosuid,nodev,size=67108864",
-                **(
-                    {
-                        "/work/output/workspace": f"rw,nosuid,nodev,mode=1777,size={settings.scratch_bytes}"
-                    }
-                    if workflow is not None
-                    else {}
-                ),
-            },
-            cap_drop=["ALL"],
-            security_opt=["no-new-privileges:true"],
-            mem_limit=settings.memory_bytes,
-            nano_cpus=2_000_000_000,
-            pids_limit=128,
-            ulimits=[
-                Ulimit(
-                    name="fsize",
-                    soft=settings.max_output_bytes,
-                    hard=settings.max_output_bytes,
-                )
-            ],
-            log_config=LogConfig(
-                type="json-file", config={"max-size": "4m", "max-file": "2"}
-            ),
+        for path in (inputs, *inputs.rglob("*")):
+            os.chown(path, -1, slot_uid)
+            path.chmod(0o550 if path.is_dir() else 0o440)
+        device_groups = (
+            sorted(
+                {
+                    path.stat().st_gid
+                    for path in (
+                        *Path("/dev").glob("davinci*"),
+                        Path("/dev/devmm_svm"),
+                        Path("/dev/hisi_hdc"),
+                    )
+                    if path.exists() and path.stat().st_gid != 0
+                }
+            )
+            if use_npu
+            else []
         )
-        container.start()
+        command = [
+            "setpriv",
+            f"--reuid={slot_uid}",
+            f"--regid={slot_uid}",
+            "--groups=" + ",".join(map(str, device_groups))
+            if device_groups
+            else "--clear-groups",
+            "--inh-caps=-all",
+            "--ambient-caps=-all",
+            "--no-new-privs",
+            "--",
+            "prlimit",
+            f"--fsize={settings.max_output_bytes}",
+            "--",
+            sys.executable,
+            "-I",
+            "-u",
+            "-m",
+            "atc_tools.executor",
+        ]
+        environment = {
+            **os.environ,
+            "HOME": str(output),
+            "USER": f"atc-slot-{slot_uid}",
+            "LOGNAME": f"atc-slot-{slot_uid}",
+            "ASCEND_PROCESS_LOG_PATH": str(output / "vendor-logs"),
+            "TMPDIR": str(output),
+            "ATC_TASK_INPUT": str(inputs),
+            "ATC_TASK_OUTPUT": str(output),
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "TE_PARALLEL_COMPILER": "2",
+            "OPENCV_IO_MAX_IMAGE_PIXELS": "16777216",
+        }
+        process = subprocess.Popen(
+            command,
+            cwd=output,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
         deadline = monotonic() + settings.timeout_seconds
         log_path = directory / "task.log"
-        with ThreadPoolExecutor(max_workers=1) as collector:
+        assert process.stdout is not None
+        with process.stdout, ThreadPoolExecutor(max_workers=1) as collector:
             capture = collector.submit(
-                _capture, container, log_path, settings.max_log_bytes
+                _capture, process.stdout, log_path, settings.max_log_bytes
             )
             try:
                 while True:
-                    container.reload()
-                    if workflow is not None:
-                        total = 0
-                        for path in output.iterdir():
-                            try:
-                                info = path.stat(follow_symlinks=False)
-                            except FileNotFoundError:
-                                continue
-                            if S_ISREG(info.st_mode):
+                    exit_code = process.poll()
+                    total = 0
+                    scratch = 0
+                    for path in output.rglob("*"):
+                        try:
+                            info = path.lstat()
+                        except FileNotFoundError:
+                            continue
+                        if S_ISREG(info.st_mode):
+                            if path.parent == output:
                                 total += info.st_size
-                        if total > settings.max_output_bytes + 8192:
-                            raise ResourceError(
-                                413, "Execution exceeded the aggregate output limit."
-                            )
+                            else:
+                                scratch += info.st_size
+                    if (
+                        total > settings.max_output_bytes + 8192
+                        or scratch > settings.scratch_bytes
+                    ):
+                        raise ResourceError(
+                            413, "Execution exceeded the output or scratch space limit."
+                        )
+                    if workflow is not None:
                         _sync_workflow(settings, store, job, output, stages, published)
-                    if container.status in ("exited", "dead"):
-                        exit_code = int(container.attrs["State"]["ExitCode"])
-                        if container.attrs["State"].get("OOMKilled"):
-                            error = "Execution exceeded the memory limit."
+                    if exit_code is not None:
                         break
                     if store.cancel_requested(job["id"]):
                         error = "Execution cancelled."
@@ -683,17 +674,8 @@ def _execute(
                         break
                     sleep(0.25)
             finally:
-                if exit_code is None:
-                    container.stop(timeout=5)
-            try:
-                capture.result()
-            except DockerException:
-                LOG.warning(
-                    "job_id=%s attempt_id=%s event=log_stream_interrupted",
-                    job["id"],
-                    attempt,
-                )
-                _capture(container, log_path, settings.max_log_bytes)
+                _stop_group(process)
+            capture.result()
         if error is None:
             if exit_code == 0:
                 if workflow is None:
@@ -724,15 +706,11 @@ def _execute(
                 error = f"Execution exited with status {exit_code}. See the task log."
     except ResourceError as failure:
         error = str(failure)
-    except (DockerException, OSError, ValueError):
+    except (OSError, ValueError):
         LOG.exception(
             "job_id=%s attempt_id=%s event=execution_error", job["id"], attempt
         )
         error = "Execution or result collection failed. See the task log or contact an operator."
-    finally:
-        if container is not None:
-            # A removal failure leaves the attempt running so recovery can confirm exit.
-            container.remove(force=True)
     # Remove phase-local inputs before releasing its slot or queueing verification.
     shutil.rmtree(inputs, ignore_errors=True)
     shutil.rmtree(output, ignore_errors=True)
@@ -757,93 +735,67 @@ def _execute(
     )
 
 
-def _executor_checks(settings: Settings, client: docker.DockerClient) -> Row:
-    """Check that all enabled local images and the configured runtime exist.
-
-    Parameters
-    ----------
-    settings, client
-        Worker deployment settings and Docker connection.
-
-    Returns
-    -------
-    dict
-        Public boolean readiness flags.
-    """
-    images = {"inspection_image": settings.inspect_image}
-    if not settings.simulate_compile:
-        if settings.compile_image:
-            images["310b4_image"] = settings.compile_image
-        if settings.compile_910b2_image:
-            images["910b2_image"] = settings.compile_910b2_image
-    checks: Row = {}
-    for name, image in images.items():
-        try:
-            client.images.get(image)
-        except NotFound:
-            checks[name] = False
-        else:
-            checks[name] = True
-    if (
-        settings.compile_910b2_image
-        and settings.ascend_device is not None
-        and not settings.simulate_compile
-    ):
-        checks["ascend_runtime"] = "ascend" in client.info().get("Runtimes", {})
-    return checks
-
-
-def run_worker(settings: Settings) -> None:
-    """Coordinate independent CPU, compile and device slots and recover interrupted work.
+def _executor_checks(settings: Settings) -> Row:
+    """Check installed executables and the configured device.
 
     Parameters
     ----------
     settings
-        Database, Docker mount, and execution settings.
+        Enabled toolchain configuration.
 
-    Raises
-    ------
-    RuntimeError
-        Another worker holds the deployment lock.
+    Returns
+    -------
+    dict
+        Scheduler health checks published to the API.
     """
+    checks = {"executor": find_spec("atc_tools") is not None}
+    if not settings.simulate_compile:
+        checks["atc"] = shutil.which("atc") is not None
+        if settings.amct_targets:
+            checks["amct"] = shutil.which("amct_onnx") is not None
+        if settings.ascend_device is not None:
+            checks["device"] = any(Path("/dev").glob("davinci[0-9]*"))
+            checks["msprof"] = shutil.which("msprof") is not None
+    return checks
+
+
+def run_worker(settings: Settings) -> None:
+    """Run one scheduler, sharing a single physical-device slot across NPU operations.
+
+    Parameters
+    ----------
+    settings
+        Storage, concurrency and execution settings.
+    """
+    import fcntl
+
     store = Store(settings)
-    (settings.data_dir / "assets").mkdir(parents=True, exist_ok=True)
-    client = docker.from_env(timeout=30)
-    with store.connect() as lease:
-        lease.autocommit = True
-        locked = lease.execute(
-            "SELECT pg_try_advisory_lock(792640302) AS locked"
-        ).fetchone()
-        if locked is None or not locked["locked"]:
-            raise RuntimeError("Another worker is already active.")
-        _recover(settings, store, client)
-        cleanup_due = monotonic()
-        slots = {
-            "cpu": settings.cpu_slots,
-            "compile": settings.compile_slots,
-            "device": 1,
-        }
-        running: dict[str, set[Future[None]]] = {lane: set() for lane in slots}
-        with ThreadPoolExecutor(max_workers=sum(slots.values())) as pool:
+    with (settings.data_dir / "scheduler.lock").open("a") as lease:
+        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _recover(settings, store)
+        slots = (
+            ["cpu"] * settings.cpu_slots
+            + ["compile"] * settings.compile_slots
+            + ["device"]
+        )
+        running: dict[int, Future[None]] = {}
+        due = monotonic()
+        with ThreadPoolExecutor(max_workers=len(slots)) as pool:
             while True:
-                lease.execute("SELECT 1")
-                if monotonic() >= cleanup_due:
-                    cleanup_due = monotonic() + 5
-                    try:
-                        store.record_worker_status(_executor_checks(settings, client))
-                        store.clear_browser_files()
-                    except OSError:
-                        LOG.exception("event=browser_cleanup_failed")
-                for lane, capacity in slots.items():
-                    finished = {attempt for attempt in running[lane] if attempt.done()}
-                    for attempt in finished:
-                        attempt.result()
-                    running[lane].difference_update(finished)
-                    while len(running[lane]) < capacity:
-                        job = store.claim(lane)
-                        if job is None:
-                            break
-                        running[lane].add(
-                            pool.submit(_execute, settings, store, client, job)
+                if monotonic() >= due:
+                    store.record_worker_status(_executor_checks(settings))
+                    store.clear_browser_files()
+                    due = monotonic() + 5
+                for slot, lane in enumerate(slots):
+                    task = running.get(slot)
+                    if task is not None:
+                        if not task.done():
+                            continue
+                        task.result()
+                        del running[slot]
+                    job = store.claim(lane)
+                    if job is not None:
+                        running[slot] = pool.submit(
+                            _execute, settings, store, 20000 + slot, job
                         )
                 sleep(0.25)

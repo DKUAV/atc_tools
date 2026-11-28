@@ -1,8 +1,9 @@
-"""Run a single service task in an isolated execution container."""
+"""Run a single service task in its assigned workspace."""
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -19,8 +20,8 @@ def main() -> int:
     int
         Zero for a complete result or one for a failed operation.
     """
-    inputs = Path("/work/input")
-    output = Path("/work/output")
+    inputs = Path(os.environ.get("ATC_TASK_INPUT", "/work/input"))
+    output = Path(os.environ.get("ATC_TASK_OUTPUT", "/work/output"))
     model = inputs / "model.onnx"
     try:
         request = json.loads((inputs / "request.json").read_text(encoding="utf-8"))
@@ -57,7 +58,9 @@ def main() -> int:
                 )
             else:
                 artifact = "model.om"
-                script = Path("/opt/atc-tools/scripts/compile.sh")
+                from atc_tools.workflow import SCRIPTS
+
+                script = SCRIPTS / "compile.sh"
                 target = output / "compile"
                 subprocess.run(
                     [
@@ -76,6 +79,7 @@ def main() -> int:
             build = {
                 "target": "Ascend310B4",
                 "preset": request["preset"],
+                "executor_image": request.get("executor_image"),
                 "simulated": simulated,
             }
             (output / "build.json").write_text(

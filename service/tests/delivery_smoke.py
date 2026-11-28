@@ -181,9 +181,7 @@ def main() -> None:
     build = json.loads(
         file(next(item for item in workflow["outputs"] if item["kind"] == "build_info"))
     )
-    assert build["model_sha256"] == om["sha256"] and build["executor_image"].startswith(
-        "sha256:"
-    )
+    assert build["model_sha256"] == om["sha256"] and "/atc_tools-" in build["executor_image"]
     npu = atomic(
         "run_npu", primary_id=om["id"], preset="910b2-int8", samples=[[samples[0]]]
     )

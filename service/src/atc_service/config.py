@@ -4,29 +4,25 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from importlib.metadata import version
+from pathlib import Path
 
 
 @dataclass(frozen=True)
 class Settings:
     """Store immutable deployment settings for the service."""
 
-    database_url: str
     data_dir: Path
-    docker_data_dir: PurePosixPath
-    inspect_image: str
-    compile_image: str | None = None
+    runtime: str
     simulate_compile: bool = False
     max_upload_bytes: int = 512 * 1024 * 1024
     max_log_bytes: int = 4 * 1024 * 1024
     max_output_bytes: int = 1024 * 1024 * 1024
     timeout_seconds: int = 900
-    memory_bytes: int = 4 * 1024 * 1024 * 1024
     max_pending_jobs: int = 8
     max_account_bytes: int = 4 * 1024 * 1024 * 1024
     browser_secure_cookies: bool = True
     browser_session_seconds: int = 12 * 60 * 60
-    compile_910b2_image: str | None = None
     amct_targets: tuple[str, ...] = ()
     ascend_device: int | None = None
     cpu_slots: int = 2
@@ -43,13 +39,8 @@ class Settings:
             Service, storage, and task limits.
         """
         return cls(
-            database_url=os.environ["ATC_DATABASE_URL"],
             data_dir=Path(os.environ.get("ATC_DATA_DIR", "/data")),
-            docker_data_dir=PurePosixPath(
-                os.environ.get("ATC_DOCKER_DATA_DIR", "/srv/atc-tools")
-            ),
-            inspect_image=os.environ.get("ATC_INSPECT_IMAGE", "atc-executor:local"),
-            compile_image=os.environ.get("ATC_COMPILE_IMAGE") or None,
+            runtime=runtime_identity(),
             simulate_compile=os.environ.get("ATC_SIMULATE_COMPILE") == "1",
             max_upload_bytes=int(
                 os.environ.get("ATC_MAX_UPLOAD_BYTES", 512 * 1024 * 1024)
@@ -59,9 +50,6 @@ class Settings:
                 os.environ.get("ATC_MAX_OUTPUT_BYTES", 1024 * 1024 * 1024)
             ),
             timeout_seconds=int(os.environ.get("ATC_TIMEOUT_SECONDS", 900)),
-            memory_bytes=int(
-                os.environ.get("ATC_MEMORY_BYTES", 4 * 1024 * 1024 * 1024)
-            ),
             max_pending_jobs=int(os.environ.get("ATC_MAX_PENDING_JOBS", 8)),
             max_account_bytes=int(
                 os.environ.get("ATC_MAX_ACCOUNT_BYTES", 4 * 1024 * 1024 * 1024)
@@ -70,7 +58,6 @@ class Settings:
             browser_session_seconds=int(
                 os.environ.get("ATC_BROWSER_SESSION_SECONDS", 43200)
             ),
-            compile_910b2_image=os.environ.get("ATC_COMPILE_910B2_IMAGE") or None,
             amct_targets=tuple(
                 filter(None, os.environ.get("ATC_AMCT_TARGETS", "").split(","))
             ),
@@ -83,15 +70,13 @@ class Settings:
         )
 
     def __post_init__(self) -> None:
-        """Validate limits and the daemon-side storage path.
+        """Validate execution limits and configured target devices.
 
         Raises
         ------
         ValueError
-            A limit is nonpositive or the Docker path is not absolute.
+            A resource limit or device configuration is invalid.
         """
-        if not self.docker_data_dir.is_absolute():
-            raise ValueError("ATC_DOCKER_DATA_DIR must be an absolute Linux path.")
         if not set(self.amct_targets) <= {"310B4", "910B2"}:
             raise ValueError("ATC_AMCT_TARGETS may contain 310B4 and 910B2.")
         if self.ascend_device is not None and self.ascend_device < 0:
@@ -102,7 +87,6 @@ class Settings:
                 self.max_log_bytes,
                 self.max_output_bytes,
                 self.timeout_seconds,
-                self.memory_bytes,
                 self.max_pending_jobs,
                 self.max_account_bytes,
                 self.browser_session_seconds,
@@ -114,16 +98,27 @@ class Settings:
         ):
             raise ValueError("The service resource limits must be positive.")
 
-    def compile_preset(self) -> dict[str, str | bool] | None:
+    def compile_preset(self) -> dict[str, str | bool]:
         """Return the enabled 310B4 preset.
 
         Returns
         -------
-        dict[str, str | bool] or None
-            The public preset, if a compiler or explicit simulator is configured.
+        dict[str, str | bool]
+            The public preset for the installed compiler or the simulator.
         """
         if self.simulate_compile:
             return {"id": "310b4-simulation", "target": "310B4", "simulated": True}
-        if self.compile_image:
-            return {"id": "310b4-float", "target": "310B4", "simulated": False}
-        return None
+        return {"id": "310b4-float", "target": "310B4", "simulated": False}
+
+
+def runtime_identity() -> str:
+    """Identify the currently installed tools and the base toolchain.
+
+    Returns
+    -------
+    str
+        Build identity including local wheel updates.
+    """
+    return (
+        f"{os.environ.get('ATC_BASE_IMAGE', 'local')}/atc_tools-{version('atc_tools')}"
+    )

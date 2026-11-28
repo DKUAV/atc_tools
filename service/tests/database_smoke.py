@@ -1,9 +1,10 @@
 """Exercise file registration and asset provenance against the smoke database."""
 
+import json
 import os
 from dataclasses import replace
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from atc_service.config import Settings
 from atc_service.store import ResourceError, Store
@@ -23,7 +24,7 @@ def check_quantized_provenance(store: Store, owner: str) -> None:
     with store.connect() as db:
         asset = db.execute(
             "SELECT a.id FROM assets a JOIN job_outputs o ON o.asset_id = a.id "
-            "JOIN jobs j ON j.id = o.job_id WHERE a.owner = %s AND a.validated "
+            "JOIN jobs j ON j.id = o.job_id WHERE a.owner = ? AND a.validated "
             "AND a.kind = 'quantized_onnx' AND j.operation = 'quantize_onnx' AND j.simulated",
             (owner,),
         ).fetchone()
@@ -31,7 +32,6 @@ def check_quantized_provenance(store: Store, owner: str) -> None:
     real = replace(
         store.settings,
         simulate_compile=False,
-        compile_image=store.settings.inspect_image,
         amct_targets=("310B4",),
     )
     body = Operation(operation="compile_om", input_id=asset["id"], preset="310b4-int8")
@@ -66,17 +66,10 @@ def check_upload_rollback(store: Store, token: str) -> None:
         Credential for the upload request to the API in the current container.
     """
     with store.connect() as db:
-        db.execute("""
-            CREATE FUNCTION reject_smoke_upload() RETURNS trigger LANGUAGE plpgsql AS $$
-            BEGIN
-                RAISE EXCEPTION 'Smoke upload rejection' USING ERRCODE = '23514';
-            END;
-            $$
-        """)
         db.execute(
             "CREATE TRIGGER reject_smoke_upload BEFORE INSERT ON assets "
-            "FOR EACH ROW WHEN (NEW.filename = 'rollback-smoke.onnx') "
-            "EXECUTE FUNCTION reject_smoke_upload()"
+            "WHEN NEW.filename = 'rollback-smoke.onnx' BEGIN "
+            "SELECT RAISE(ABORT, 'Smoke upload rejection'); END"
         )
     try:
         assets = store.settings.data_dir / "assets"
@@ -90,23 +83,41 @@ def check_upload_rollback(store: Store, token: str) -> None:
             },
         )
         try:
-            with urlopen(upload, timeout=10) as response:
+            with build_opener(ProxyHandler({})).open(upload, timeout=10) as response:
                 raise AssertionError(f"Rejected upload returned {response.status}.")
         except HTTPError as error:
             with error:
-                assert error.code == 503, error.read()
+                assert error.code == 503 and "Could not register" in json.load(error)["detail"]
         assert not set(assets.iterdir()) - before, "Rejected upload left an asset file."
     finally:
         with store.connect() as db:
-            db.execute("DROP TRIGGER reject_smoke_upload ON assets")
-            db.execute("DROP FUNCTION reject_smoke_upload()")
+            db.execute("DROP TRIGGER reject_smoke_upload")
+
+
+def check_session_cleanup(store: Store) -> None:
+    """Verify closed browser sessions released their registered asset files.
+
+    Parameters
+    ----------
+    store
+        Smoke database and its local asset directory.
+    """
+    store.clear_browser_files()
+    with store.connect() as db:
+        cleared = db.execute("SELECT id FROM assets WHERE cleared").fetchall()
+    assert cleared, "Expected at least one cleared browser-session artifact."
+    assert all(
+        not (store.settings.data_dir / "assets" / str(row["id"])).exists()
+        for row in cleared
+    )
 
 
 def main() -> None:
-    """Run PostgreSQL checks after the simulated delivery workflow."""
+    """Run SQLite checks after the simulated delivery workflow."""
     store = Store(Settings.from_env())
     check_quantized_provenance(store, os.environ["ATC_SMOKE_USER_A"])
     check_upload_rollback(store, os.environ["ATC_SMOKE_TOKEN_A"])
+    check_session_cleanup(store)
     print("Verified simulated quantization provenance and rejected upload cleanup.")
 
 

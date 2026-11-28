@@ -1,12 +1,10 @@
 [project]
 name = "atc-service"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Intranet job service for atc_tools"
 requires-python = ">=3.10"
 dependencies = [
-    "docker>=7.1,<8",
     "fastapi>=0.115,<1",
-    "psycopg[binary]>=3.2,<4",
     "uvicorn>=0.34,<1",
 ]
 
@@ -14,5 +12,10 @@ dependencies = [
 atc-service = "atc_service.cli:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
+raw-options = { root = "..", local_scheme = "no-local-version" }

@@ -25,7 +25,9 @@ from atc_tools.model.tensor_io import Array, Tensor, read_outputs, save_outputs
 from atc_tools.model.workflow_inputs import model_inputs, prepare_dataset
 from atc_tools.workflow_archive import pack_results, unpack_results
 
-SCRIPTS = Path("/opt/atc-tools/scripts")
+SCRIPTS = Path(__file__).parent / "scripts"
+if not SCRIPTS.is_dir():  # Source checkout before wheel installation.
+    SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 TOOL_ERRORS = (OSError, ValueError, RuntimeError, subprocess.CalledProcessError)
 T = TypeVar("T")
 
