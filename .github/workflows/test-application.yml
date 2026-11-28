@@ -32,7 +32,6 @@ jobs:
       - name: Build candidate wheel
         if: inputs.wheel_run == ''
         run: |
-          export SETUPTOOLS_SCM_PRETEND_VERSION="0.2.0.dev${GITHUB_RUN_NUMBER}+g${GITHUB_SHA:0:12}"
           uv build --wheel
           cd dist
           sha256sum *.whl > SHA256SUMS
@@ -93,8 +92,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          if [[ $GITHUB_REF_TYPE == tag ]]; then tag=$GITHUB_REF_NAME; fi
+          if [[ $GITHUB_REF_TYPE == tag ]]; then
+            version=$GITHUB_REF_NAME
+          else
+            wheels=(dist/atc_tools-*.whl)
+            [[ ${#wheels[@]} == 1 && -f ${wheels[0]} ]]
+            version=${wheels[0]#dist/atc_tools-}
+            version=${version%%-*}
+          fi
+          short_sha=$(git rev-parse --short=7 "$GITHUB_SHA")
+          tag="$version-$short_sha"
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/atc-tools-service:$tag"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           if docker manifest inspect "$image" > /dev/null 2>"$RUNNER_TEMP/manifest-error"; then

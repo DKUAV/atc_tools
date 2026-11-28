@@ -22,7 +22,7 @@ jobs:
       publish: false
   candidate-or-release:
     if: github.event_name != 'pull_request' && (github.ref_type != 'tag' || inputs.wheel_run != '')
-    concurrency: publish-${{ github.ref }}
+    concurrency: publish-${{ github.sha }}
     permissions:
       contents: write
       packages: write

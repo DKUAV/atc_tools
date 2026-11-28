@@ -26,4 +26,6 @@ Drain active jobs. Verify the candidate wheel's SHA-256 and install it over SSH 
 
 Use the validated candidate's CI run for release. Import the tested application image, update `ATC_APP_IMAGE`, and recreate the container with the same data and SSH mounts. Verify readiness, the original reproducer and a historical download. Retain the source commit, wheel checksum, base digest and final registry digest.
 
+Image tags use `<version>-<short commit SHA>`. Candidate images use the Hatch VCS wheel version, for example `0.1.1.dev6-2c63f75`. Release images use the Git release tag as the version prefix, for example `v0.2.0-2c63f75`. CI generates the short SHA with `git rev-parse --short=7`, which uses more characters when needed to identify the commit unambiguously. An existing image tag blocks publication.
+
 For release operators, select the candidate run from **ARM64 service CI** and verify its source commit and wheel checksum. Create the release tag on that exact commit. Dispatch the workflow at the tag with the numeric candidate run ID as the `wheel_run` input. CI uses that wheel for the tested image and attaches the receipt to the GitHub release. Ordinary successful development builds publish a unique candidate tag and a release-receipt artifact.
