@@ -50,10 +50,10 @@ def test_shared_preprocessing_formats(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("dtype_name", "value"), [("int64", 2**53 + 1), ("uint64", 2**63 + 1)]
 )
-def test_padding_preserves_large_integers(
+def test_geometry_preserves_large_integers_or_reports_loss(
     tmp_path: Path, dtype_name: str, value: int
 ) -> None:
-    """Keep exact source values when padding a raw integer tensor.
+    """Keep exact source values or reject a lossy geometry conversion.
 
     Parameters
     ----------
@@ -69,8 +69,12 @@ def test_padding_preserves_large_integers(
     settings = {"layout": "nchw", "geometry": "pad", "fill": 0, "values": "raw"}
     expected = np.array([[[[0, value, 0]]]], dtype=dtype)
     np.testing.assert_array_equal(prepare_tensor(source, tensor, 0, settings), expected)
-    with pytest.raises(ValueError, match="Padding would lose precision"):
+    with pytest.raises(ValueError, match="Geometry would lose precision"):
         prepare_tensor(source, tensor, 0, {**settings, "fill": 0.5})
+    larger = Tensor("input", (1, 1, 2, 2), dtype)
+    for geometry in ("resize", "letterbox"):
+        with pytest.raises(ValueError, match="Geometry would lose precision"):
+            prepare_tensor(source, larger, 0, {**settings, "geometry": geometry})
 
 
 def test_model_dynamic_dimensions_preserve_fixed_axes() -> None:

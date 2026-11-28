@@ -135,7 +135,7 @@ def _geometry(
     Raises
     ------
     ValueError
-        Source batch or channels differ, padding would crop, or padding would
+        Source batch or channels differ, padding would crop, or geometry would
         lose precision in an integer source tensor.
     """
     source = np.moveaxis(array, axis, -1)
@@ -164,11 +164,11 @@ def _geometry(
         integer_fill = int(fill)
         if fill == integer_fill and lo <= integer_fill <= hi:
             dtype = source.dtype
-        elif source.dtype.itemsize == 8:
-            with np.errstate(invalid="ignore"):
-                restored = source.astype(np.float64).astype(source.dtype)
-            if np.any(restored != source):
-                raise ValueError("Padding would lose precision in the integer samples.")
+    if dtype.kind == "f" and source.dtype.kind in "iu" and source.dtype.itemsize == 8:
+        with np.errstate(invalid="ignore"):
+            restored = source.astype(np.float64).astype(source.dtype)
+        if np.any(restored != source):
+            raise ValueError("Geometry would lose precision in the integer samples.")
     result = np.full((batch.shape[0], height, width, channels), fill, dtype=dtype)
     for index, sample in enumerate(batch):
         if resize:
