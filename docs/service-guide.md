@@ -1,11 +1,11 @@
 # ATC Tools Service
 
-[English](README.md) | [中文](README_zh.md)
+[English](service-guide.md) | [中文](service-guide.zh.md)
 
 ATC Tools Service provides a browser workbench and a bearer-token HTTP API for ONNX model inspection, OM compilation, INT8 quantization, inference, accuracy comparison, and profiling.
 
 > **New here?** Start with [Quick Start (Simulation Mode)](#quick-start-simulation-mode) to try the full workflow locally without Ascend hardware.  
-> For architecture, ownership, and execution boundaries, see the [Service Architecture](../docs/service-design.md).
+> For architecture, ownership, and execution boundaries, see the [Service Architecture](service-design.md).
 
 ## Contents
 
@@ -38,10 +38,10 @@ docker compose --env-file lab.env -f deploy/compose.yaml up -d --no-build --pull
 docker compose --env-file lab.env -f deploy/compose.yaml down
 
 # Issue an API bearer token for a user
-docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token alice
 
 # Revoke a token via a private prompt
-docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service revoke-token
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc_service revoke-token
 ```
 
 ---
@@ -53,7 +53,7 @@ docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service re
 Set a password for a local account using the interactive prompt. Setting a new password automatically ends all existing browser sessions for that account.
 
 ```bash
-docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service set-browser-password alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc_service set-browser-password alice
 ```
 
 Then open `http://127.0.0.1:8766/` in your browser and sign in.
@@ -105,7 +105,7 @@ Upload `work/demo.onnx` in the workbench and select `work/demo.npy` when prompte
 - Logging out or letting a session expire immediately revokes access to session files; the worker deletes their bytes once pending jobs finish.
 - Task history and logs remain visible on your next sign-in.
 
-For full UI specifications, see [Web UI Requirements](../docs/web-ui-requirements.md) and [Web UI Design](../docs/web-ui-design.md).
+For full UI specifications, see [Web UI Requirements](web-ui-requirements.md) and [Web UI Design](web-ui-design.md).
 
 ---
 
@@ -182,11 +182,11 @@ All three smoke test suites run against a local simulation deployment (`ATC_SIMU
 Issue two test tokens and run `smoke.py` (uploads a generated ONNX, checks multi-account isolation, failure logs, and simulated downloads) and `delivery_smoke.py` (standalone operations, phased logs, and retry):
 
 ```bash
-export ATC_SMOKE_TOKEN_A="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice)"
-export ATC_SMOKE_TOKEN_B="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token bob)"
+export ATC_SMOKE_TOKEN_A="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token alice)"
+export ATC_SMOKE_TOKEN_B="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token bob)"
 
-uv run --locked python service/tests/smoke.py
-uv run --locked python service/tests/delivery_smoke.py
+uv run --locked python tests/service/smoke.py
+uv run --locked python tests/service/delivery_smoke.py
 
 unset ATC_SMOKE_TOKEN_A ATC_SMOKE_TOKEN_B
 ```
@@ -205,11 +205,11 @@ export ATC_SMOKE_PASSWORD_B="<bob-password>"
 # Optional: verify physical file removal in the host data directory
 export ATC_SMOKE_DATA_DIR="$PWD/work/service-data"
 
-uv run --locked python service/tests/browser_smoke.py
+uv run --locked python tests/service/browser_smoke.py
 ```
 
 ---
 
 ## GitHub Actions
 
-ARM64 CI verifies SSH, simulation and real floating-point and INT8 compilation for both SoCs. Release builds reuse the verified candidate wheels. [Offline deployment guide](../deploy/OFFLINE.md)
+ARM64 CI verifies SSH, simulation and real floating-point and INT8 compilation for both SoCs. Release builds reuse the verified candidate wheel. [Offline deployment guide](../deploy/OFFLINE.md)

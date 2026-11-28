@@ -229,7 +229,7 @@ journalctl -k -b --no-pager | grep -Ei 'oom-kill|out of memory|killed process' |
 uv run ruff check
 uv run ruff format --check
 uv run ty check
-uv run python -m unittest discover -s tests -v
+uv run --locked pytest -q tests
 ```
 
 本地测试使用 ONNX Runtime CPU 和模拟 pyACL，可验证数据格式、参数传递所依赖的接口和资源释放。ATC、AMCT 与 NPU 推理按本文流程在目标环境验收。

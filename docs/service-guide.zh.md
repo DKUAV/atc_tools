@@ -1,11 +1,11 @@
 # ATC Tools 服务
 
-[English](README.md) | [中文](README_zh.md)
+[English](service-guide.md) | [中文](service-guide.zh.md)
 
 ATC Tools Service 提供浏览器工作台（Web Workbench）和基于 Bearer Token 的 HTTP API，用于完成 ONNX 模型检查、OM 模型编译、INT8 量化、推理、精度对比和性能分析（Profiling）。
 
 > **初次使用？** 建议先看[快速开始（模拟模式）](#快速开始模拟模式)，无需昇腾硬件即可在本地体验完整流程。  
-> 服务架构、职责划分与执行边界见[服务架构设计](../docs/service-design.md)。
+> 服务架构、职责划分与执行边界见[服务架构设计](service-design.md)。
 
 ## 目录
 
@@ -38,10 +38,10 @@ docker compose --env-file lab.env -f deploy/compose.yaml up -d --no-build --pull
 docker compose --env-file lab.env -f deploy/compose.yaml down
 
 # 为用户签发 API Bearer Token
-docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token alice
 
 # 通过交互式提示吊销 Token
-docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service revoke-token
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc_service revoke-token
 ```
 
 ---
@@ -53,7 +53,7 @@ docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service re
 通过交互式命令为本地账号设置密码。重置密码会自动结束该账号现有的浏览器会话。
 
 ```bash
-docker compose --env-file lab.env -f deploy/compose.yaml exec app atc-service set-browser-password alice
+docker compose --env-file lab.env -f deploy/compose.yaml exec app atc_service set-browser-password alice
 ```
 
 随后在浏览器中打开 `http://127.0.0.1:8766/` 即可登录使用。
@@ -105,7 +105,7 @@ PY
 - 退出登录或会话过期后，会话文件的访问权限会立即失效；Worker 会在该会话的待执行任务完成后物理删除对应文件。
 - 任务历史记录和日志在下次登录后仍然可见。
 
-完整的界面需求与设计见[Web UI 需求文档](../docs/web-ui-requirements.md)和[Web UI 设计文档](../docs/web-ui-design.md)。
+完整的界面需求与设计见[Web UI 需求文档](web-ui-requirements.md)和[Web UI 设计文档](web-ui-design.md)。
 
 ---
 
@@ -182,11 +182,11 @@ PY
 签发两个测试 Token，依次运行 `smoke.py`（上传生成的小型 ONNX、测试双账号隔离、失败日志及模拟产物下载）和 `delivery_smoke.py`（端到端测试独立操作、分阶段日志和失败重试）：
 
 ```bash
-export ATC_SMOKE_TOKEN_A="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token alice)"
-export ATC_SMOKE_TOKEN_B="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc-service issue-token bob)"
+export ATC_SMOKE_TOKEN_A="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token alice)"
+export ATC_SMOKE_TOKEN_B="$(docker compose --env-file lab.env -f deploy/compose.yaml exec -T app atc_service issue-token bob)"
 
-uv run --locked python service/tests/smoke.py
-uv run --locked python service/tests/delivery_smoke.py
+uv run --locked python tests/service/smoke.py
+uv run --locked python tests/service/delivery_smoke.py
 
 unset ATC_SMOKE_TOKEN_A ATC_SMOKE_TOKEN_B
 ```
@@ -205,7 +205,7 @@ export ATC_SMOKE_PASSWORD_B="<bob-password>"
 # 可选：指定宿主机数据目录以验证文件是否已物理删除
 export ATC_SMOKE_DATA_DIR="$PWD/work/service-data"
 
-uv run --locked python service/tests/browser_smoke.py
+uv run --locked python tests/service/browser_smoke.py
 ```
 
 ---
