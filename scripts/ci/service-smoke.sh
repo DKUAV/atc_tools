@@ -66,4 +66,6 @@ else
     for test in smoke browser_smoke delivery_smoke; do
         uv run --locked python "service/tests/$test.py"
     done
+    "${compose[@]}" exec -T -e ATC_SMOKE_USER_A -e ATC_SMOKE_TOKEN_A api \
+        python - < service/tests/database_smoke.py
 fi

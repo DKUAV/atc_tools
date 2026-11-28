@@ -47,6 +47,32 @@ def test_shared_preprocessing_formats(tmp_path: Path) -> None:
         np.testing.assert_allclose(prepared.astype(np.float64), expected, rtol=1e-6)
 
 
+@pytest.mark.parametrize(
+    ("dtype_name", "value"), [("int64", 2**53 + 1), ("uint64", 2**63 + 1)]
+)
+def test_padding_preserves_large_integers(
+    tmp_path: Path, dtype_name: str, value: int
+) -> None:
+    """Keep exact source values when padding a raw integer tensor.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory for the source tensor.
+    dtype_name, value
+        Integer dtype and a value that float64 cannot represent exactly.
+    """
+    source = tmp_path / "input.npy"
+    dtype = np.dtype(dtype_name)
+    np.save(source, np.array([[[[value]]]], dtype=dtype), allow_pickle=False)
+    tensor = Tensor("input", (1, 1, 1, 3), dtype)
+    settings = {"layout": "nchw", "geometry": "pad", "fill": 0, "values": "raw"}
+    expected = np.array([[[[0, value, 0]]]], dtype=dtype)
+    np.testing.assert_array_equal(prepare_tensor(source, tensor, 0, settings), expected)
+    with pytest.raises(ValueError, match="Padding would lose precision"):
+        prepare_tensor(source, tensor, 0, {**settings, "fill": 0.5})
+
+
 def test_model_dynamic_dimensions_preserve_fixed_axes() -> None:
     """Require concrete dimensions while preserving the fixed ONNX axes."""
     metadata = {

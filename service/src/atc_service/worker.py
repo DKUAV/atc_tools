@@ -408,6 +408,71 @@ def _recover(settings: Settings, store: Store, client: docker.DockerClient) -> N
         LOG.warning("job_id=%s attempt_id=%s event=recovered", job["id"], attempt)
 
 
+def _executor_image(
+    settings: Settings,
+    store: Store,
+    client: docker.DockerClient,
+    job: Row,
+    previous_om: str | None,
+) -> str:
+    """Resolve and pin the administrator-selected image for this attempt.
+
+    Parameters
+    ----------
+    settings, store, client
+        Asset storage, job database, and trusted Docker daemon.
+    job
+        Active job carrying its configured image reference or pinned image ID.
+    previous_om
+        Primary OM for a resumed verification phase or optional stage retry.
+
+    Returns
+    -------
+    str
+        Local immutable Docker image ID to use for container creation.
+
+    Raises
+    ------
+    ResourceError
+        The original image is unavailable or legacy build metadata cannot confirm it.
+    """
+    try:
+        image_id = client.images.get(job["image"]).id
+    except NotFound as error:
+        raise ResourceError(
+            409,
+            "The job's executor image is unavailable. Ask an operator to restore it.",
+        ) from error
+    if not image_id:
+        raise ResourceError(409, "Docker did not return an executor image ID.")
+    if job["image"] == image_id:
+        return image_id
+    if previous_om is not None:
+        # Older jobs stored only a tag. Metadata may confirm the approved image,
+        # but must never select which image Docker executes.
+        build_id = store.build_info_for_om(job, previous_om)
+        recorded = None
+        if build_id is not None:
+            try:
+                with (settings.data_dir / "assets" / str(build_id)).open(
+                    "rb"
+                ) as stream:
+                    data = stream.read(65537)
+                if len(data) <= 65536:
+                    manifest = json.loads(data)
+                    if isinstance(manifest, dict):
+                        recorded = manifest.get("executor_image")
+            except (OSError, ValueError, RecursionError):
+                pass
+        if recorded != image_id:
+            raise ResourceError(
+                409,
+                "Cannot verify the original executor image. Restore its original tag or recompile the model.",
+            )
+    store.pin_executor(job, image_id)
+    return image_id
+
+
 def _execute(
     settings: Settings,
     store: Store,
@@ -465,6 +530,7 @@ def _execute(
             asset_dir / str(job["input_id"]),
             inputs / ("reference.zip" if action == "compare_outputs" else "model.onnx"),
         )
+        primary = None
         if workflow is not None:
             (output / "workspace").mkdir()
             _, own_outputs = store.job(job["owner"], job["id"])
@@ -506,7 +572,13 @@ def _execute(
         use_npu = job["lane"] == "device" and not job["simulated"]
         if use_npu and settings.ascend_device is None:
             raise ValueError("The 910B2 runtime device is unavailable.")
-        image = client.images.get(job["image"])
+        image_id = _executor_image(
+            settings,
+            store,
+            client,
+            job,
+            primary if phase == "verify" or action == "retry_step" else None,
+        )
         (inputs / "request.json").write_text(
             json.dumps(
                 {
@@ -516,14 +588,14 @@ def _execute(
                     "simulated": job["simulated"],
                     "workflow": workflow,
                     "phase": phase,
-                    "executor_image": image.id,
+                    "executor_image": image_id,
                     "limit_bytes": settings.max_output_bytes,
                 }
             ),
             encoding="utf-8",
         )
         container = client.containers.create(
-            image.id or job["image"],
+            image_id,
             name=f"atc-attempt-{attempt.hex}",
             labels={"atc.attempt": str(attempt)},
             mounts=[
@@ -664,16 +736,19 @@ def _execute(
     # Remove phase-local inputs before releasing its slot or queueing verification.
     shutil.rmtree(inputs, ignore_errors=True)
     shutil.rmtree(output, ignore_errors=True)
+    rejected = None
     try:
         accepted = (
             deferred and error is None and store.queue_verification(job)
         ) or store.finish(job, exit_code, error, records)
     except ResourceError as failure:
         accepted = False
-        store.finish(job, exit_code, str(failure), [])
+        rejected = str(failure)
     if not accepted:
         for record in records:
             (settings.data_dir / "assets" / str(record.id)).unlink(missing_ok=True)
+    if rejected is not None:
+        store.finish(job, exit_code, rejected, [])
     LOG.info(
         "job_id=%s attempt_id=%s event=finished exit_code=%s",
         job["id"],

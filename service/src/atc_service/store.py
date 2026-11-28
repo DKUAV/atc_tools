@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib.resources import files
@@ -70,6 +72,32 @@ class Store:
         return psycopg.Connection[Row].connect(
             self.settings.database_url, row_factory=dict_row
         )
+
+    @contextmanager
+    def _publication(self) -> Generator[psycopg.Connection[Row], None, None]:
+        """Distinguish a rejected publication from an uncertain commit.
+
+        Yields
+        ------
+        psycopg.Connection
+            Transaction used to register owned files and their job state.
+
+        Raises
+        ------
+        ResourceError
+            A database error occurred before starting the commit. The caller
+            can safely discard the unregistered files.
+        psycopg.DatabaseError
+            The commit failed or its outcome is unknown. Keep the files in
+            case registration became durable.
+        """
+        with ExitStack() as transaction:
+            try:
+                yield transaction.enter_context(self.connect())
+            except psycopg.DatabaseError as error:
+                raise ResourceError(
+                    503, "Could not register the files. Try again."
+                ) from error
 
     def migrate(self) -> None:
         """Apply schema migrations under a database migration lock."""
@@ -237,7 +265,7 @@ class Store:
         dict
             New asset record.
         """
-        with self.connect() as db:
+        with self._publication() as db:
             db.execute(
                 "SELECT username FROM accounts WHERE username = %s FOR UPDATE", (owner,)
             )
@@ -263,7 +291,7 @@ class Store:
         dict
             Queued inspection job and its input ID.
         """
-        with self.connect() as db:
+        with self._publication() as db:
             db.execute(
                 "SELECT username FROM accounts WHERE username = %s FOR UPDATE", (owner,)
             )
@@ -414,17 +442,32 @@ class Store:
                             "Idempotency key already used with different parameters.",
                         )
                     return previous
+            standalone_int8 = (
+                operation == "compile_om"
+                and workflow is not None
+                and workflow.get("action") == "compile_om"
+                and workflow["precision"] == "int8"
+            )
             input_kinds = ["onnx", "quantized_onnx"]
             if operation == "compare_outputs":
                 input_kinds = ["tensors"]
-            elif (
-                operation == "compile_om"
-                and workflow
-                and workflow.get("action")
-                and workflow["precision"] == "int8"
-            ):
+            elif standalone_int8:
                 input_kinds = ["quantized_onnx"]
             asset = self._require_asset(db, owner, session_id, input_id, input_kinds)
+            if (
+                standalone_int8
+                and not simulated
+                and db.execute(
+                    "SELECT 1 FROM job_outputs o JOIN jobs j ON j.id = o.job_id "
+                    "WHERE o.asset_id = %s AND j.operation = 'quantize_onnx' "
+                    "AND NOT j.simulated",
+                    (input_id,),
+                ).fetchone()
+                is None
+            ):
+                raise ResourceError(
+                    422, "Use an ONNX model produced by real quantization."
+                )
             if (
                 operation not in {"inspect_onnx", "compare_outputs"}
                 and not asset["validated"]
@@ -673,7 +716,7 @@ class Store:
         times
             Executor timestamps for observed stage transitions.
         """
-        with self.connect() as db:
+        with self._publication() as db:
             changed = db.execute(
                 "UPDATE jobs SET stages = %s, accuracy_summary = COALESCE(%s, accuracy_summary), "
                 "stage_times = COALESCE(%s, stage_times) "
@@ -768,6 +811,54 @@ class Store:
                 ).rowcount
                 == 1
             )
+
+    def pin_executor(self, job: Row, image_id: str) -> None:
+        """Persist the Docker image ID before starting this job's executor.
+
+        Parameters
+        ----------
+        job
+            Claimed job and active attempt ID.
+        image_id
+            Immutable ID resolved by the worker's Docker daemon.
+
+        Raises
+        ------
+        ResourceError
+            The worker no longer owns this attempt.
+        """
+        with self.connect() as db:
+            changed = db.execute(
+                "UPDATE jobs SET image = %s WHERE id = %s AND attempt_id = %s AND state = 'running'",
+                (image_id, job["id"], job["attempt_id"]),
+            )
+            if changed.rowcount != 1:
+                raise ResourceError(409, "The execution attempt is no longer active.")
+
+    def build_info_for_om(self, job: Row, primary_id: str) -> UUID | None:
+        """Find the owned build metadata published alongside a primary OM.
+
+        Parameters
+        ----------
+        job
+            Job whose account and file scope must own the compilation.
+        primary_id
+            Published primary OM used for verification or retry.
+
+        Returns
+        -------
+        UUID or None
+            Available build information asset from the originating compilation.
+        """
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT a.id FROM job_outputs om JOIN job_outputs info USING (job_id) "
+                "JOIN assets a ON a.id = info.asset_id WHERE om.asset_id = %s "
+                "AND a.kind = 'build_info' AND NOT a.cleared AND a.owner = %s "
+                "AND a.browser_session_id IS NOT DISTINCT FROM %s",
+                (UUID(primary_id), job["owner"], job["browser_session_id"]),
+            ).fetchone()
+        return row["id"] if row else None
 
     def record_worker_status(self, checks: Row) -> None:
         """Publish the current scheduling coordinator's readiness checks.
@@ -908,7 +999,7 @@ class Store:
         bool
             Whether the job published its staged outputs.
         """
-        with self.connect() as db:
+        with self._publication() as db:
             current = db.execute(
                 "SELECT cancel_requested FROM jobs WHERE id = %s AND attempt_id = %s AND state = 'running' FOR UPDATE",
                 (job["id"], job["attempt_id"]),

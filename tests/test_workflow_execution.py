@@ -10,8 +10,9 @@ import numpy as np
 import pytest
 from onnx import TensorProto, helper, save
 
-from atc_tools.model.tensor_io import save_outputs
+from atc_tools.model.tensor_io import Array, read_outputs, save_outputs
 from atc_tools.workflow import run_workflow
+from atc_tools.workflow_archive import pack_results, unpack_results
 
 
 def test_real_workflow_build_and_verify(
@@ -165,3 +166,26 @@ def test_real_workflow_build_and_verify(
         assert profile["collection_wall_seconds"] >= 0
         assert profile["collection_files"] == 1
         assert profile["collection_bytes"] == len(archive.read("summary.csv"))
+
+
+def test_tensor_archives_share_the_payload_limit(tmp_path: Path) -> None:
+    """Compare archives written at the tensor budget without counting the header.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary output and extraction directories.
+    """
+    root, archive = tmp_path / "samples", tmp_path / "tensors.zip"
+    sample = root / "00000000"
+    sample.parent.mkdir()
+    outputs: dict[str, Array] = {"output": np.zeros(32_768, dtype=np.float32)}
+    save_outputs(sample, outputs)
+    limit = sum(path.stat().st_size for path in sample.iterdir())
+    pack_results(root, archive, False, limit)
+    assert not unpack_results(archive, tmp_path / "unpacked", limit)
+    np.testing.assert_array_equal(
+        read_outputs(tmp_path / "unpacked" / sample.name)["output"], outputs["output"]
+    )
+    with pytest.raises(ValueError, match="oversized tensor archive"):
+        unpack_results(archive, tmp_path / "oversized", limit - 1)
