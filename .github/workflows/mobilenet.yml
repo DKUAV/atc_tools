@@ -86,8 +86,9 @@ jobs:
         run: |
           set -u
           sha256sum -c SHA256SUMS
-          mapfile -t images < <(cut -f1 images.txt)
-          docker image rm "${images[@]}"
+          expected_images=(atc-service:local atc-executor:local atc-tools-postgres:17)
+          diff -u <(printf '%s\n' "${expected_images[@]}" | sort) <(cut -f1 images.txt | sort)
+          docker image rm "${expected_images[@]}"
           docker image load -i images.tar
           while IFS=$'\t' read -r image expected; do
             actual=$(docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$image")
@@ -100,6 +101,9 @@ jobs:
           ATC_HOST_DATA_DIR=$(mktemp -d "$RUNNER_TEMP/atc-offline-data.XXXXXXXX")
           echo "::add-mask::$ATC_DB_PASSWORD"
           compose=(docker compose -p atc-offline-ci --env-file lab.env -f compose.yaml)
+          compose_images=$("${compose[@]}" config --images)
+          diff -u <(printf '%s\n' atc-service:local atc-tools-postgres:17 | sort) \
+            <(printf '%s\n' "$compose_images" | sort -u)
           cleanup() {
             local status=$?
             if (( status != 0 )); then

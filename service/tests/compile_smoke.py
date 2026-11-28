@@ -145,6 +145,7 @@ def main() -> None:
                 build
             )
             assert build["preset"] == preset, build
+            assert build["precision"] == precision, build
             assert build["calibration_batches"] == len(samples), build
             assert build["model_sha256"] == sha256(artifact).hexdigest(), build
             assert build["input_shapes"] == {"input": list(shape)}, build
